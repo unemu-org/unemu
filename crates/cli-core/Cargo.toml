@@ -13,12 +13,12 @@ description = "The platform-neutral command line: its parser, usage text, exit c
 layer = "neutral"
 
 [dependencies]
-core-launch = { path = "../core-launch", version = "0.0.3" }
+core-launch = { path = "../core-launch", version = "0.0.4" }
 unemu-core-api.workspace = true
-image-store = { path = "../image-store", version = "0.0.3" }
-image-registry = { path = "../registry", version = "0.0.3" }
+image-store = { path = "../image-store", version = "0.0.4" }
+image-registry = { path = "../registry", version = "0.0.4" }
 media.workspace = true
-recipe = { path = "../recipe", version = "0.0.3" }
+recipe = { path = "../recipe", version = "0.0.4" }
 anyhow.workspace = true
 toml.workspace = true
 
@@ -27,7 +27,7 @@ toml.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
-unemu-test-core = { path = "../test-core", version = "0.0.3" }
+unemu-test-core = { path = "../test-core", version = "0.0.4" }
 unemu-core-api = { workspace = true, features = ["test-support"] }
 # The mock registry of the push, pull and login tests.
-image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }
+image-registry = { path = "../registry", version = "0.0.4", features = ["test-support"] }

@@ -735,7 +735,7 @@ fn an_image_that_needs_a_newer_release_is_refused_before_its_config_is_read() {
         .unwrap();
     let sentence = format!(
         "newer:1.0.0 needs unemupc 99.0.0 or newer (this is {})",
-        compat::EXTRACTION_BASELINE
+        core_release()
     );
     for command in [
         &["image", "machine", "new", "newer:1.0.0"][..],
@@ -834,8 +834,10 @@ fn import_states_a_minimum_release_only_upwards() {
     let file = lab.root.join("machine.toml");
     let file = file.to_str().unwrap();
     let raised = level().to_string();
-    let newer =
-        format!("--min-app-version is newer than {raised}, the newest release this unemupc reads");
+    let newer = format!(
+        "--min-app-version is newer than {}, the newest release this unemupc reads",
+        core_release()
+    );
     lab.ok(&[
         "image",
         "import",
@@ -907,4 +909,10 @@ fn import_states_a_minimum_release_only_upwards() {
         assert!(errors.contains("--min-app-version expects"), "{errors}");
     }
     assert!(level() >= PACKAGE);
+}
+
+/// The PC core's release, which a refusal names as the release that reads.
+fn core_release() -> String {
+    use unemu_core_api::Core;
+    unemu_pc_core::PcCore.description().version.to_string()
 }

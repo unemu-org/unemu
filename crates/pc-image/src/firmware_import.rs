@@ -2169,13 +2169,13 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(refusal.contains("only raises"), "{refusal}");
-        // The package already declares what this build reads at most, so
-        // stating it again changes nothing.
+        // The package already declares what it computes, so stating it
+        // again changes nothing.
         let refusal = edit(
             &store,
             "firmware/plain:r1",
             "firmware/plain:r2",
-            &stated(level()),
+            &stated(computed),
             &[],
         )
         .unwrap_err()

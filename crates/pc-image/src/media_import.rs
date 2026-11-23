@@ -1275,9 +1275,9 @@ mod tests {
 
     /// A set written now names the `ibm-pc` platform, which release 0.0.3
     /// first reads, so it declares 0.0.3; a stated minimum release below the
-    /// computed one is refused naming both, and a re-import states the same
-    /// marker. This build reads nothing newer than 0.0.3, so no statement can
-    /// raise a PC set above it; the shared tables' tests raise one.
+    /// computed one is refused naming both. A statement up to the core's
+    /// release raises the marker, and only a re-import with the same statement
+    /// matches the tag.
     #[test]
     fn a_stated_minimum_release_raises_the_marker_and_never_lowers_it() {
         use crate::compat::level;
@@ -1318,12 +1318,13 @@ mod tests {
             Requirement::Release(level())
         );
         // The marker is part of what the tag names: the same request without
-        // a statement computes the same one.
+        // the statement computes the lower marker, a different set, and the
+        // tag refuses it.
         let same = plan(&request(std::slice::from_ref(&disk), "Raised set")).unwrap();
-        assert_eq!(
-            publish(&store, &same, &|_, _| {}, &|| false).unwrap(),
-            Outcome::AlreadyImported(stored.descriptor().clone())
-        );
+        let conflict = publish(&store, &same, &|_, _| {}, &|| false)
+            .unwrap_err()
+            .to_string();
+        assert!(conflict.contains("tag conflict"), "{conflict}");
         assert_eq!(
             publish(&store, &raised, &|_, _| {}, &|| false).unwrap(),
             Outcome::AlreadyImported(stored.descriptor().clone())

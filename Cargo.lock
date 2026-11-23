@@ -262,8 +262,8 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 
 [[package]]
 name = "assembly"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "audio",
  "bus",
@@ -455,8 +455,8 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -549,8 +549,8 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bus"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -674,8 +674,8 @@ dependencies = [
 
 [[package]]
 name = "chipset"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "device",
  "devices",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "cli-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "core-launch",
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "cli-pc"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "assembly",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "core-launch"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "sha2",
  "unemu-core-api",
@@ -888,8 +888,8 @@ dependencies = [
 
 [[package]]
 name = "cpu"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "thiserror 1.0.69",
  "x86jit-core",
@@ -949,16 +949,16 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "device"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "devices"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "image-registry"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "image-store",
  "recipe",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "image-store"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "libc",
  "serde",
@@ -1854,8 +1854,8 @@ dependencies = [
 
 [[package]]
 name = "journal"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "sha2",
  "thiserror 1.0.69",
@@ -1864,8 +1864,8 @@ dependencies = [
 
 [[package]]
 name = "journal-files"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "journal",
  "libc",
@@ -1936,7 +1936,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "library-model"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "image-registry",
  "image-store",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "library-ui"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "egui",
  "image-registry",
@@ -2014,8 +2014,8 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "machine"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "bus",
  "cpu",
@@ -2025,8 +2025,8 @@ dependencies = [
 
 [[package]]
 name = "machine-file"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "assembly",
  "cpu",
@@ -2044,7 +2044,7 @@ dependencies = [
 
 [[package]]
 name = "machine-view"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cpal",
  "objc2 0.6.5",
@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "libc",
  "sha2",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "media-ui"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "egui",
@@ -2703,8 +2703,8 @@ dependencies = [
 
 [[package]]
 name = "pc-config"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "assembly",
  "serde",
@@ -2716,8 +2716,8 @@ dependencies = [
 
 [[package]]
 name = "pc-harness"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "anyhow",
  "assembly",
@@ -2733,7 +2733,7 @@ dependencies = [
 
 [[package]]
 name = "pc-image"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "core-launch",
@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "pc-library"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "image-registry",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "pc-media"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "devices",
@@ -2794,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "pc-session-tests"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "audio",
@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "pc-ui"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "core-launch",
@@ -2969,7 +2969,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platforms"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "core-launch",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "player-ui"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "core-launch",
  "egui",
@@ -3138,7 +3138,7 @@ dependencies = [
 
 [[package]]
 name = "recipe"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "image-store",
  "libc",
@@ -3910,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "ui-kit"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "arboard",
  "egui",
@@ -3945,8 +3945,8 @@ dependencies = [
 
 [[package]]
 name = "unemu-pc-core"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "assembly",
  "audio",
@@ -3961,15 +3961,15 @@ dependencies = [
 
 [[package]]
 name = "unemu-test-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "unemu-core-api",
 ]
 
 [[package]]
 name = "unemupc"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "anyhow",
  "assembly",
@@ -4021,7 +4021,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "upcli"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "cli-core",
@@ -4117,8 +4117,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "0.0.3"
-source = "git+https://github.com/unemu-org/unemupc?rev=a28a4a5b084a376a9a02baef891318231b308797#a28a4a5b084a376a9a02baef891318231b308797"
+version = "0.0.4"
+source = "git+https://github.com/unemu-org/unemupc?rev=8a319d70cb9636e7e95637b201c7c5f02cf9602c#8a319d70cb9636e7e95637b201c7c5f02cf9602c"
 dependencies = [
  "device",
 ]
@@ -4494,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "window"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assembly",
  "core-launch",

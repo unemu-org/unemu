@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Stored run refusal precedence before document decoding; machine-images §8.
 
-use image_store::{compat, media_type, Descriptor, Digest, Store, MAX_SMALL_BLOB};
+use image_store::{media_type, Descriptor, Digest, Store, MAX_SMALL_BLOB};
 use std::{
     ffi::OsString,
     path::PathBuf,
@@ -100,7 +100,7 @@ fn release_before_future_manifest_envelope(machine: bool) {
         false,
         &format!(
             "test:future needs unemupc 99.0.0 or newer (this is {})",
-            compat::EXTRACTION_BASELINE
+            core_release()
         ),
     );
 }
@@ -248,4 +248,10 @@ fn workspace_run_checks_pin_mismatch_before_manifest_decoding() {
             pinned.digest, image.digest
         ),
     );
+}
+
+/// The PC core's release, which a refusal names as the release that reads.
+fn core_release() -> String {
+    use unemu_core_api::Core;
+    unemu_pc_core::PcCore.description().version.to_string()
 }

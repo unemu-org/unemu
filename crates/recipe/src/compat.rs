@@ -8,7 +8,7 @@
 use crate::model::{Op, Recipe};
 use image_store::compat::{lookup, AppVersion, Requirement, Row};
 
-pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 4);
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 5);
 pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
 
 /// Recipe versions, the value of the top-level `recipe` key.

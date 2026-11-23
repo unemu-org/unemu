@@ -13,7 +13,7 @@ description = "Platform-neutral recipes: the typed model, the TOML 1.0 parser, t
 layer = "neutral"
 
 [dependencies]
-image-store = { path = "../image-store", version = "0.0.3" }
+image-store = { path = "../image-store", version = "0.0.4" }
 # The deflate decoder of zip members in a library, the version the lock
 # already holds.
 miniz_oxide = "0.9.1"

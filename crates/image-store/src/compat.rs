@@ -89,7 +89,7 @@ impl fmt::Display for AppVersion {
 pub const BASELINE: AppVersion = AppVersion::new(0, 0, 1);
 /// The next front-end release. Rows use literal historical releases so their
 /// meaning survives later releases; this constant advances with the application.
-pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 4);
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 5);
 /// The newest shared front-end row. Composition also includes the PC provider
 /// and recipe parser's front-end maxima, independently of every core table.
 pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);

@@ -7,6 +7,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-23 — Release 0.0.4:** the first release of unemu from its own
+  repository. The workspace version is 0.0.4 and `NEXT_RELEASE` in
+  `image_store::compat`, `pc_image::compat` and `recipe::compat` is 0.0.5, so
+  a row for a feature this release does not read names 0.0.5. The PC core is
+  pinned to the unemupc v0.0.4 tag's commit `8a319d70`, which the release
+  workflow's core-release-check accepts. Tests that named the core's release
+  through the extraction baseline now read it from the PC core's description,
+  and the user-ROM recipe builds look in this repository's `vendor/user-roms`.
 - **2026-11-22 — Repository split point chosen (E4):** the maintainer chose
   `0f279540` as the split point, with hosted CI green. Front-end changes now
   land only on the front-end branch until the re-pin; core changes land on

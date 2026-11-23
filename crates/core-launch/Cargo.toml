@@ -21,4 +21,4 @@ sha2.workspace = true
 
 [dev-dependencies]
 # A whole core to list beside the scripted ones of the tests.
-unemu-test-core = { path = "../test-core", version = "0.0.3" }
+unemu-test-core = { path = "../test-core", version = "0.0.4" }

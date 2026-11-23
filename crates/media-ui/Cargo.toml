@@ -21,16 +21,16 @@ test-support = []
 [dependencies]
 assembly.workspace = true
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
-image-registry = { path = "../registry", version = "0.0.3" }
-image-store = { path = "../image-store", version = "0.0.3" }
+image-registry = { path = "../registry", version = "0.0.4" }
+image-store = { path = "../image-store", version = "0.0.4" }
 media.workspace = true
-pc-image = { path = "../pc-image", version = "0.0.3" }
+pc-image = { path = "../pc-image", version = "0.0.4" }
 # The media models these views draw.
-pc-media = { path = "../pc-media", version = "0.0.3" }
+pc-media = { path = "../pc-media", version = "0.0.4" }
 # The desktop's skin, icons and pane colours.
-ui-kit = { path = "../ui-kit", version = "0.0.3" }
+ui-kit = { path = "../ui-kit", version = "0.0.4" }
 
 [dev-dependencies]
 machine-file = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
-ui-kit = { path = "../ui-kit", version = "0.0.3", features = ["test-support"] }
+ui-kit = { path = "../ui-kit", version = "0.0.4", features = ["test-support"] }

@@ -14,16 +14,16 @@ layer = "application"
 
 [dependencies]
 assembly.workspace = true
-image-registry = { path = "../registry", version = "0.0.3" }
-image-store = { path = "../image-store", version = "0.0.3" }
-pc-image = { path = "../pc-image", version = "0.0.3" }
+image-registry = { path = "../registry", version = "0.0.4" }
+image-store = { path = "../image-store", version = "0.0.4" }
+pc-image = { path = "../pc-image", version = "0.0.4" }
 # The cores compiled in.
 unemu-core-api.workspace = true
 unemu-pc-core.workspace = true
 unemu-nes-core.workspace = true
 # The scripted core, only for trying the front end's generic path by hand;
 # see the `test-core` feature.
-unemu-test-core = { path = "../test-core", version = "0.0.3", optional = true }
+unemu-test-core = { path = "../test-core", version = "0.0.4", optional = true }
 
 [features]
 # Adds the scripted test core to the list of compiled-in cores. Off by
@@ -36,6 +36,6 @@ test-core = ["dep:unemu-test-core"]
 pc-config.workspace = true
 unemu-core-api = { workspace = true, features = ["test-support"] }
 # The check the programs make of every core, run over the list.
-core-launch = { path = "../core-launch", version = "0.0.3" }
+core-launch = { path = "../core-launch", version = "0.0.4" }
 # A scratch directory for the cartridge file the NES test opens.
-image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.4", features = ["test-support"] }

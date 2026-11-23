@@ -771,10 +771,10 @@ fn keep_as_tags_the_result_in_the_recipes_repository_under_another_tag() {
     }
 }
 
-/// The user-ROM roots of the volume goldens: `vendor/user-roms`, then
-/// `UNEMUPC_USER_ROMS_DIR`, those that exist.
+/// The user-ROM roots of the volume goldens: the front end's own
+/// `vendor/user-roms`, then `UNEMUPC_USER_ROMS_DIR`, those that exist.
 fn user_roots() -> Vec<PathBuf> {
-    std::iter::once(vendor().join("user-roms"))
+    std::iter::once(frontend::vendor().join("user-roms"))
         .chain(std::env::var_os("UNEMUPC_USER_ROMS_DIR").map(PathBuf::from))
         .filter(|root| root.is_dir())
         .collect()

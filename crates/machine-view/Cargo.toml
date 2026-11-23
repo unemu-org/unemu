@@ -35,7 +35,7 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 [dev-dependencies]
 # The session's tests against a whole core, through the contract alone, with
 # the contract's storage in memory.
-unemu-test-core = { path = "../test-core", version = "0.0.3" }
+unemu-test-core = { path = "../test-core", version = "0.0.4" }
 unemu-core-api = { workspace = true, features = ["test-support"] }
 
 # Synthetic key events for the keyboard tap's decoding tests.

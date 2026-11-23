@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -73,23 +73,23 @@ unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemun
 # green CI, the same revision in every line (repo-split.md §4.1). Never a bare
 # path, a branch or a tag; develop against a local core checkout through a
 # gitignored [patch] override. Moving this revision is a re-pin bead.
-assembly = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-audio = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-cpu = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-device = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-devices = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-journal-files = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-machine = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-machine-file = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-pc-config = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-pc-harness = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-unemu-pc-core = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-unemupc = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
-video = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "a28a4a5b084a376a9a02baef891318231b308797" }
+assembly = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+audio = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+cpu = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+device = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+devices = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+journal-files = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+machine = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+machine-file = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+pc-config = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+pc-harness = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+unemu-pc-core = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+unemupc = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
+video = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "8a319d70cb9636e7e95637b201c7c5f02cf9602c" }
 
 # Internal crates share the workspace version.
-media = { path = "crates/media", version = "0.0.3" }
-machine-view = { path = "crates/machine-view", version = "0.0.3" }
+media = { path = "crates/media", version = "0.0.4" }
+machine-view = { path = "crates/machine-view", version = "0.0.4" }
 
 # Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
 [profile.dev]

@@ -14,13 +14,13 @@ layer = "pc"
 
 [dependencies]
 journal-files.workspace = true
-core-launch = { path = "../core-launch", version = "0.0.3" }
+core-launch = { path = "../core-launch", version = "0.0.4" }
 assembly.workspace = true
 machine-file.workspace = true
 media.workspace = true
 pc-config.workspace = true
-image-store = { path = "../image-store", version = "0.0.3" }
-recipe = { path = "../recipe", version = "0.0.3" }
+image-store = { path = "../image-store", version = "0.0.4" }
+recipe = { path = "../recipe", version = "0.0.4" }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
@@ -30,9 +30,9 @@ unemu-core-api.workspace = true
 pc-harness = { workspace = true, features = ["test-support"] }
 machine-file = { workspace = true, features = ["test-support"] }
 unemu-pc-core.workspace = true
-image-registry = { path = "../registry", version = "0.0.3" }
+image-registry = { path = "../registry", version = "0.0.4" }
 media.workspace = true
-image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.4", features = ["test-support"] }
 cpu.workspace = true
 machine.workspace = true
 

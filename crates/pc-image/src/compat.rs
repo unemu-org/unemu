@@ -94,7 +94,7 @@ pub fn level() -> AppVersion {
 }
 
 /// PC front-end rows, kept separate from the core rows in `pc_config::compat`.
-pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 4);
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 5);
 pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
 
 /// Standalone PC tools supply their application release explicitly.
