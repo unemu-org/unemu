@@ -1,5 +1,7 @@
 Frozen record of the split: unemu maintains the front end and unemupc the PC core; the living description is [architecture.md](../architecture.md), and the normative contract lives in [unemu-core-api](https://github.com/unemu-org/unemu-core-api).
 
+Closed on 2026-11-23: the split is done. The core repository was cut at [a28a4a5b](https://github.com/unemu-org/unemupc/commit/a28a4a5b084a376a9a02baef891318231b308797) and the front end first pinned it at [ccbce16a](https://github.com/unemu-org/unemu/commit/ccbce16ae0c3ac6f7dc9247098874fcaee43dc0a); both released `v0.0.4` (unemupc `8a319d70`, unemu `ff37615b`, pinned to unemupc `v0.0.4`). The software repository (formerly unemu-media) installs unemu with its own pinned fetcher, not `setup-unemu`.
+
 # Core contract and the front-end split
 
 Status: **Accepted** by the maintainer on 2026-11-17 (design step of
