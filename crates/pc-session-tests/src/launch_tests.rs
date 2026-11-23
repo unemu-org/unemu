@@ -252,8 +252,8 @@ fn compare_outputs(created: &mut dyn Machine, direct: &mut dyn Machine) {
     created.set_outputs(Outputs::NONE.with_audio(true));
     direct.set_outputs(Outputs::NONE.with_audio(true));
     for steps in [100, 200, 8000] {
-        created.input(InputEvent::ReleaseAll);
-        direct.input(InputEvent::ReleaseAll);
+        created.input(InputEvent::ReleaseAll).unwrap();
+        direct.input(InputEvent::ReleaseAll).unwrap();
         assert_eq!(
             created.run(RunLimit::steps(steps)),
             direct.run(RunLimit::steps(steps))

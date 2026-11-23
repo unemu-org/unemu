@@ -262,12 +262,12 @@
         {
           "name": "machine-view",
           "kind": null,
-          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9"
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e"
         },
         {
           "name": "unemu-core-api",
           "kind": null,
-          "source": "git+https://github.com/unemu-org/unemu-core-api?rev=4e2dd8325b54ce652bf4884fd85da602b14ae726#4e2dd8325b54ce652bf4884fd85da602b14ae726"
+          "source": "git+https://github.com/unemu-org/unemu-core-api?rev=316dd2a1f429cc3ef37a2bed203e89b2160079ff#316dd2a1f429cc3ef37a2bed203e89b2160079ff"
         }
       ]
     },
@@ -285,7 +285,7 @@
         {
           "name": "machine-view",
           "kind": "dev",
-          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9"
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e"
         }
       ]
     },

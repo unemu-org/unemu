@@ -156,7 +156,7 @@ impl Player {
 
     /// The Media menu: one section per removable slot, or no menu.
     pub(crate) fn media_entries(&self) -> Option<Vec<Entry>> {
-        if self.slots.is_empty() {
+        if self.offers.media.is_empty() {
             return None;
         }
         let live = self.session.as_ref().is_some_and(|s| s.takes_media());

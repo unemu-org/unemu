@@ -1394,8 +1394,8 @@ mod tests {
             assert_eq!(
                 text,
                 "unemu VERSION\n\
-                 core unemupc VERSION (unemupc), contract 0.3\n\
-                 core unemunes 0.0.1 (unemunes), contract 0.3\n\
+                 core unemupc VERSION (unemupc), contract 0.5\n\
+                 core unemunes 0.0.1 (unemunes), contract 0.5\n\
                  LICENCE NOTICE\n\nFONT NOTICE\n\nEGUI FONT NOTICE\n\n\
                  SYMBOL FONT NOTICE\n\nOPL3 NOTICE",
                 "{option}"

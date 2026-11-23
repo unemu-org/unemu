@@ -17,7 +17,7 @@
 //! | Stop | always | the machine finishes; the application returns to its library |
 //! | Save state, Load state | the machine lists saved state | one quick slot per content and core; Load state greyed until a state was saved for this content |
 //! | Mute, Speed, Fast forward, Full screen | always | as for every machine |
-//! | The Media menu | a removable slot | one section per removable slot: Eject, Next in catalogue and the catalogue's entries |
+//! | The Media menu | media changes and a removable slot | one section per removable slot: Eject, Next in catalogue and the catalogue's entries |
 //! | Input… | a pad port | the Input dialog over [`machine_view::pads::PadBindings`] |
 //! | Show overscan | the picture's visible part is smaller than the picture | a view option, off by default |
 //! | Pointer capture | a relative pointer | as for every machine |
@@ -66,7 +66,7 @@ use std::{
 };
 use unemu_core_api::{
     DisplayId, InputKind, MachineDescription, MediaAction, PadControl, PortId, ResetKind, SlotId,
-    SlotState,
+    SlotState, Status,
 };
 use winit::{
     event::{ElementState, MouseButton},
@@ -98,8 +98,8 @@ pub struct Offers {
     /// Power cycle is a hard reset: the machine lists one. Without it,
     /// Power cycle finishes the machine and starts it again.
     pub power_cycle_by_reset: bool,
-    /// The Media menu's sections, one per removable slot, in the
-    /// description's order.
+    /// The Media menu's sections when media changes are offered, one per
+    /// removable slot, in the description's order.
     pub media: Vec<SlotId>,
     /// Machine › Save state and Load state: the machine lists saved
     /// state.
@@ -196,6 +196,8 @@ pub struct Player {
     prepared: Prepared,
     /// `None` once a power cycle could not start the machine again.
     session: Option<Session>,
+    observed_status: Status,
+    session_error_reported: bool,
     offers: Offers,
     pads: Vec<PadPort>,
     slots: Vec<SlotView>,
@@ -259,7 +261,9 @@ impl Player {
         let state_saved = prepared.states_dir().is_some_and(quick_state::exists);
         let mut player = Self {
             prepared,
+            observed_status: session.machine().status(),
             session: Some(session),
+            session_error_reported: false,
             offers,
             pads,
             slots,
@@ -417,6 +421,20 @@ impl Player {
         warnings: &mut impl Write,
     ) {
         self.now = elapsed;
+        if self.report_session_error() {
+            return;
+        }
+        if let Some(session) = &mut self.session {
+            let status = session.machine().status();
+            if status == Status::Finished && self.observed_status != Status::Finished {
+                session.running = false;
+                session.halted = false;
+                session.release_pointer();
+                self.paused = false;
+                self.message = STOPPED.into();
+            }
+            self.observed_status = status;
+        }
         let pause = self.paused || blocked || self.dialog.is_some();
         let applied = match &mut self.session {
             Some(session) if session.takes_media() => session.apply_media_events(),
@@ -451,20 +469,16 @@ impl Player {
                 self.host_failure(error.to_string());
                 return;
             }
-            let failed = session.error.as_ref().map(ToString::to_string);
+            let failed = session.error.is_some();
+            self.observed_status = session.machine().status();
             let stopped = !session.running;
             let halted = session.halted;
             self.refresh_slots();
-            if let Some(error) = failed {
-                self.message = format!("Machine stopped: {error}");
-                self.dialog = Some(Dialog::Message(MessageBox::refusal(
-                    "Machine",
-                    format!("The machine stopped: {error}"),
-                )));
-            } else if stopped {
+            if !failed && stopped {
                 self.message = if halted { HALTED } else { SWITCHED_OFF }.into();
             }
         }
+        self.report_session_error();
         if let Some(deadline) = deadline {
             ctx.request_repaint_after(deadline.saturating_sub(elapsed));
         }
@@ -476,6 +490,28 @@ impl Player {
         if let Some(wait) = self.next_light_off() {
             ctx.request_repaint_after(wait);
         }
+    }
+
+    // Input callbacks can stop the session before another execution tick.
+    fn report_session_error(&mut self) -> bool {
+        if self.session_error_reported {
+            return false;
+        }
+        let Some(error) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.error.as_ref())
+        else {
+            return false;
+        };
+        self.message = format!("Machine stopped: {error}");
+        self.dialog = Some(Dialog::Message(MessageBox::refusal(
+            "Machine",
+            format!("The machine stopped: {error}"),
+        )));
+        self.paused = false;
+        self.session_error_reported = true;
+        true
     }
 
     /// A host failure (storage, presentation) ends the machine's run: it
@@ -518,9 +554,7 @@ impl Player {
                 if !self.offers.reset {
                     return None;
                 }
-                let Some(session) = &mut self.session else {
-                    return None;
-                };
+                let session = self.session.as_mut().filter(|s| s.takes_media())?;
                 match session.reset(ResetKind::Soft, elapsed, warnings) {
                     Ok(()) => {
                         wake(session, elapsed);
@@ -583,6 +617,9 @@ impl Player {
 
     /// Queue a media change for the next run boundary, as the media keys do.
     fn change_medium(&mut self, slot: SlotId, action: MediaAction) {
+        if !self.offers.media.contains(&slot) {
+            return;
+        }
         let Some(view) = self.slots.iter().find(|view| view.id == slot) else {
             return;
         };
@@ -675,7 +712,9 @@ impl Player {
                     self.prepared.states_dir().is_some(),
                 );
                 (self.offers, self.pads, self.slots) = (offers, pads, slots);
+                self.observed_status = session.machine().status();
                 self.session = Some(session);
+                self.session_error_reported = false;
                 self.paused = false;
                 self.modal_paused = false;
                 self.message = "Power cycled".into();
@@ -864,6 +903,7 @@ fn aimed_label(description: &MachineDescription, display: DisplayId) -> Option<(
         InputKind::AbsolutePointer {
             display: aimed,
             buttons,
+            ..
         } if aimed == display => Some((port.label.as_str(), buttons)),
         _ => None,
     })
@@ -882,7 +922,7 @@ fn describe(
         .inputs
         .iter()
         .filter_map(|port| match &port.kind {
-            InputKind::Pad { controls } => Some((
+            InputKind::Pad { controls, .. } => Some((
                 port.id,
                 PadPort {
                     label: port.label.clone(),
@@ -907,7 +947,11 @@ fn describe(
     let offers = Offers {
         reset: resets.contains(&ResetKind::Soft),
         power_cycle_by_reset: resets.contains(&ResetKind::Hard),
-        media: slots.iter().map(|slot| slot.id).collect(),
+        media: slots
+            .iter()
+            .filter(|_| description.features.media_changes)
+            .map(|slot| slot.id)
+            .collect(),
         saved_state: description.features.saved_state && keeps_states,
         input: !pads.is_empty(),
         show_overscan: false,

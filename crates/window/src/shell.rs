@@ -2834,6 +2834,10 @@ impl Shell {
             }
         } else if self.presenter.is_none() {
             State::Stopped
+        } else if self.presenter.as_ref().is_some_and(|presenter| {
+            unemu_core_api::Machine::status(presenter.machine()) == unemu_core_api::Status::Finished
+        }) {
+            State::Finished
         } else if self.paused {
             State::Paused
         } else {
@@ -3162,6 +3166,9 @@ impl Shell {
     }
 
     fn focus_guest(&mut self) {
+        if self.state() == State::Finished {
+            return;
+        }
         if !self.guest_focus {
             self.reset_keyboard();
             self.guest_focus = true;
@@ -5402,7 +5409,11 @@ impl Shell {
                     continue;
                 }
                 HostEvent::Motion(dx, dy) => {
-                    if !blocked && self.guest_focus && !self.paused {
+                    if !blocked
+                        && self.guest_focus
+                        && !self.paused
+                        && self.state() != State::Finished
+                    {
                         if let Some(presenter) = &mut self.presenter {
                             presenter.mouse_motion(dx, dy);
                         }
@@ -5448,6 +5459,7 @@ impl Shell {
                         presenter.mouse.pointer_inside(false);
                     }
                 }
+                WindowEvent::MouseInput { .. } if self.state() == State::Finished => {}
                 WindowEvent::MouseInput { button, state, .. } => {
                     if !blocked
                         && self
@@ -5570,6 +5582,11 @@ impl Shell {
             return;
         }
         if let Some(presenter) = &mut self.presenter {
+            if unemu_core_api::Machine::status(presenter.machine())
+                == unemu_core_api::Status::Finished
+            {
+                return;
+            }
             if state == ElementState::Pressed {
                 self.guest_held.insert(key);
             } else if !self.guest_held.remove(&key) {
@@ -5798,6 +5815,17 @@ impl Shell {
         let Some(presenter) = &mut self.presenter else {
             return;
         };
+        if unemu_core_api::Machine::status(presenter.machine()) == unemu_core_api::Status::Finished
+        {
+            presenter.running = false;
+            presenter.halted = false;
+            presenter.next_paint = None;
+            self.paused = false;
+            self.message =
+                "Machine stopped — Power cycle restarts it, or Stop returns to the library".into();
+            self.release();
+            return;
+        }
         if presenter.takes_media() {
             if let Err(error) = presenter.apply_media_events() {
                 self.show_error(error.to_string());
@@ -5812,6 +5840,18 @@ impl Shell {
             presenter.occlusion_changed(false, elapsed);
         }
         self.modal_paused = pause;
+        if !presenter.host_failed {
+            if let Some(error) = &presenter.error {
+                let error = error.to_string();
+                let report = presenter
+                    .machine()
+                    .cpu_stop_report()
+                    .map(ToString::to_string);
+                let report = report.map(|text| self.saved_report(text));
+                self.show_machine_failure(error, report);
+                return;
+            }
+        }
         let (advance, deadline) = crate::pacing::wake(
             elapsed,
             presenter.next_paint,
@@ -5846,7 +5886,14 @@ impl Shell {
                 self.show_machine_failure(error, report);
                 return;
             }
-            if !presenter.running {
+            if unemu_core_api::Machine::status(presenter.machine())
+                == unemu_core_api::Status::Finished
+            {
+                self.paused = false;
+                self.message =
+                    "Machine stopped — Power cycle restarts it, or Stop returns to the library"
+                        .into();
+            } else if !presenter.running {
                 self.message = if presenter.halted {
                     "Machine halted — insert a boot disk and press Ctrl+Alt+Del, or Stop to return to the library"
                 } else {
@@ -12545,6 +12592,127 @@ kind='mda'
         }
     }
 
+    #[test]
+    fn finished_pc_keeps_its_picture_and_disables_live_commands() {
+        use std::time::Duration;
+        use unemu_core_api::Machine;
+        for paused in [false, true] {
+            let mut shell = shell();
+            let ctx = egui::Context::default();
+            shell.presenter.as_mut().unwrap().full_slices = true;
+            shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
+            for elapsed in (20..=100).step_by(20) {
+                shell.tick(&ctx, false, Duration::from_millis(elapsed));
+            }
+            let picture = shell.presenter.as_ref().unwrap().picture().unwrap().clone();
+            let texture = shell.texture.as_ref().unwrap().id();
+            shell.paused = paused;
+            shell
+                .presenter
+                .as_mut()
+                .unwrap()
+                .machine_mut()
+                .finish()
+                .unwrap();
+            let now = shell.presenter.as_ref().unwrap().machine().now();
+            for command in [
+                Command::Pause,
+                Command::Reset,
+                Command::FastForward,
+                Command::Speed(crate::pacing::Speed::Normal),
+                Command::Insert(0),
+                Command::InsertFile(0),
+                Command::CreateFromFiles(0),
+                Command::InsertSet(0),
+                Command::WriteMode(0),
+                Command::Next(0),
+                Command::CatalogueDisk(0, 0),
+                Command::CatalogueAll(0),
+                Command::Eject(0),
+            ] {
+                assert!(!shell.command_allowed(command), "{command:?}");
+                shell.command(command, &ctx);
+            }
+            shell.tick(&ctx, false, Duration::from_millis(120));
+            assert_eq!(shell.state(), State::Finished);
+            assert!(!shell.paused);
+            assert!(shell.message.starts_with("Machine stopped"));
+            shell.send_guest_key(KeyCode::KeyA, Pressed);
+            shell.send_guest_key(KeyCode::KeyA, Released);
+            let presenter = shell.presenter.as_ref().unwrap();
+            assert_eq!(presenter.keyboard().pending_events(), 0);
+            assert!(presenter.media_events.is_empty());
+            assert_eq!(presenter.machine().now(), now);
+            assert_eq!(presenter.picture(), Some(&picture));
+            assert_eq!(shell.texture.as_ref().unwrap().id(), texture);
+            assert!(shell.dialog.is_none());
+            assert!(shell.command_allowed(Command::PowerCycle));
+            assert!(shell.command_allowed(Command::Stop));
+            shell.command(Command::Stop, &ctx);
+            assert!(shell.presenter.is_none());
+            assert!(shell.dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn finished_pc_power_cycle_starts_a_new_machine() {
+        use unemu_core_api::{Machine, Status};
+        let temp = machine_file::test_support::TempDir::new("shell-finished-restart");
+        let (mut shell, _) = stopped_machine_file_shell(&temp);
+        let ctx = egui::Context::default();
+        shell.command(Command::Start, &ctx);
+        finish_readiness(&mut shell);
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .machine_mut()
+            .finish()
+            .unwrap();
+        // Restart also works before the next paint observes completion.
+        shell.command(Command::PowerCycle, &ctx);
+        finish_readiness(&mut shell);
+        let presenter = shell.presenter.as_ref().unwrap();
+        assert_eq!(presenter.machine().status(), Status::Ready);
+        assert_eq!(presenter.machine().steps(), 0);
+        assert!(presenter.running);
+        assert!(shell.dialog.is_none());
+        shell.command(Command::Stop, &ctx);
+        assert!(shell.presenter.is_none());
+    }
+
+    #[test]
+    fn a_stopped_sessions_input_error_is_shown_once_even_while_paused() {
+        use std::time::Duration;
+        use unemu_core_api::Machine;
+        for paused in [false, true] {
+            let mut shell = shell();
+            shell.paused = paused;
+            let presenter = shell.presenter.as_mut().unwrap();
+            presenter.running = false;
+            presenter.next_paint = None;
+            presenter.error = Some(
+                unemu_core_api::Error::new(
+                    unemu_core_api::ErrorKind::Usage,
+                    "input refused by machine",
+                )
+                .into(),
+            );
+            let now = presenter.machine().now();
+            let ctx = egui::Context::default();
+            shell.tick(&ctx, false, Duration::from_millis(20));
+            assert_eq!(
+                shell.dialog,
+                Some(("Machine error", "input refused by machine".into()))
+            );
+            assert_eq!(shell.message, "input refused by machine");
+            shell.dialog = None;
+            shell.tick(&ctx, false, Duration::from_millis(40));
+            assert!(shell.dialog.is_none());
+            assert_eq!(shell.presenter.as_ref().unwrap().machine().now(), now);
+        }
+    }
+
     /// A shell whose machine file lives in `temp` and whose machine is the
     /// protected-mode guest the CPU core refuses.
     fn refusing_shell(temp: &machine_file::test_support::TempDir) -> Shell {
@@ -13404,14 +13572,19 @@ kind='mda'
         shell.apply_picker(outcome);
         assert_eq!(shell.presenter.as_ref().unwrap().media_events, chosen);
         shell.presenter.as_mut().unwrap().media_events.clear();
-        shell.presenter.as_mut().unwrap().halted = true;
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .advance_fully(std::time::Duration::from_millis(20))
+            .unwrap();
+        assert!(shell.presenter.as_ref().unwrap().awaits_reset());
         shell.command(Command::CatalogueDisk(0, 1), &ctx);
         assert_eq!(
             shell.message,
             "A: now holds second.img. Press Ctrl+Alt+Del to boot from it."
         );
         assert_eq!(shell.presenter.as_ref().unwrap().media_events, chosen);
-        shell.presenter.as_mut().unwrap().halted = false;
         assert!(shell.stop());
     }
 

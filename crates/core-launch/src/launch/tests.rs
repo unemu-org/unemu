@@ -108,7 +108,7 @@ struct Scripted {
 impl Scripted {
     const fn new(id: &'static str, name: &'static str, answer: Answer) -> Self {
         Self {
-            description: CoreDescription::new(ContractVersion::new(0, 3), id, name, "1.0.0"),
+            description: CoreDescription::new(ContractVersion::new(0, 5), id, name, "1.0.0"),
             answer,
             create: Create::Refuse,
         }
@@ -368,7 +368,7 @@ fn a_named_core_the_program_cannot_drive_is_refused_before_anything_is_asked() {
     let error = refusal(prepare(&game, &cores, Some("old"), &scratch.dirs()));
     assert_eq!(
         error.to_string(),
-        "core Old core implements contract 0.1; this program needs 0.3"
+        "core Old core implements contract 0.1; this program needs 0.5"
     );
     assert!(take_asked().is_empty());
     // A refused core is never asked, also without a name.
@@ -1084,7 +1084,7 @@ thread_local! {
 struct Recording;
 
 static RECORDING: CoreDescription = CoreDescription::new(
-    ContractVersion::new(0, 3),
+    ContractVersion::new(0, 5),
     "recording",
     "Recording core",
     "1.0.0",
@@ -1133,13 +1133,14 @@ fn an_option_reaches_create_and_an_unknown_one_is_the_core_s_refusal() {
     let (parts, _, _) = script_parts(&scratch.0);
     let prepared = Prepared::from_parts(parts).with_options(vec![option("speaker-trace", "on")]);
     let error = start(&prepared).err().unwrap();
-    assert_eq!(error.kind, ErrorKind::Config);
+    assert_eq!(error.kind, ErrorKind::Usage);
     assert_eq!(error.message, "the test core takes no option speaker-trace");
     static LIST: [&dyn Core; 1] = [&TestCore];
     let path = scratch.file("two-players.utc", SCRIPT);
     let opened = ready(prepare(&path, &Cores::new(&LIST), None, &scratch.dirs()))
         .with_options(vec![option("speaker-trace", "on")]);
     let error = start(&opened).err().unwrap();
+    assert_eq!(error.kind, ErrorKind::Usage);
     assert_eq!(error.message, "the test core takes no option speaker-trace");
     // Without options, it starts.
     let (parts, _, _) = script_parts(&scratch.0);

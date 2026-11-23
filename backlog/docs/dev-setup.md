@@ -62,7 +62,7 @@ macOS keychain. A host `SSL_CERT_FILE` still applies to tools that read it.
 unemu maintains host tools and recipe fixtures; [unemupc](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/dev-setup.md)
 maintains PC hardware, the transitive x86jit pin and hardware fixture toolchains.
 All 13 PC-core git dependencies in `Cargo.toml` name the same exact revision,
-`0f2795402e947e235a7b892c931910b05f05d61f`, also recorded in `Cargo.lock`.
+`fc9c652e6876e7f0d189bf11d178f303ada19b13`, also recorded in `Cargo.lock`.
 
 ```sh
 bash scripts/core-patch.sh ../unemupc          # gitignored local override
@@ -78,13 +78,13 @@ through `pc_harness::test_support::root()`; missing required fixtures fail with
 untracked. The front end owns the FreeDOS 1.4 and recipe fixture scripts.
 Never commit a bare path dependency. Land changes in the core before moving
 all PC pins together and rerunning the front-end gate. The NES core is likewise
-pinned, to `0dbf0d56c627ab62601fca1dcd64ec77f3e4643c`.
+pinned, to `ba0ece5d1bdad3d4ec813d5a795a54175118a46b`.
 
 ### Host libraries: unemu-host
 
 The neutral session `machine-view` and synthetic `unemu-test-core` come from
 [unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
-pinned to `cac0317b2bf5fe1c02357eb6119dd9916283edf9` in `Cargo.toml` and
+pinned to `cfa7c3a08c9307a5c542ef27ce44a7fef462578e` in `Cargo.toml` and
 `Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
 first, then re-pin this workspace and run its gate, as for a core change.
 
@@ -111,8 +111,9 @@ resolved graph to contain exactly one `unemu-core-api`.
 
 The contract between front ends and emulator cores, `unemu-core-api`, lives in its own repository,
 [unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api) (`MIT OR Apache-2.0`), and
-is pinned the same way: a git dependency at the exact commit of a release tag, never a bare `path`
-dependency. To work against a local checkout, add an override in the
+is pinned with `unemu-core-files` to contract 0.5 at
+`316dd2a1f429cc3ef37a2bed203e89b2160079ff` (tag `v0.5.0`): a git dependency
+at the exact commit of a release tag, never a bare `path` dependency. To work against a local checkout, add an override in the
 gitignored `.cargo/config.toml`:
 
 ```toml

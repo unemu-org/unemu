@@ -843,6 +843,8 @@ fn window_ide_run_error_flushes_whole_outsw_prefix_without_opening_a_window() {
 
 #[test]
 fn journal_host_failure_stops_at_the_first_window_boundary() {
+    use unemu_core_api::{ErrorKind, Machine, RunLimit, Status};
+
     for fail in [false, true] {
         let temp = machine_file::test_support::TempDir::new("window-host-failure");
         let base = temp.path().join("base.img");
@@ -907,7 +909,18 @@ fn journal_host_failure_stops_at_the_first_window_boundary() {
             assert!(error.to_string().contains("drive 0 persistence"), "{error}");
             assert_eq!(presenter.assembled().machine.virtual_time(), boundary);
             assert_eq!(presenter.assembled().machine.cpu().code_segment(), 0);
-            assert!(presenter.advance_fully(Duration::from_millis(40)).is_err());
+            assert_eq!(presenter.machine().status(), Status::Failed);
+            assert_eq!(
+                presenter
+                    .machine_mut()
+                    .run(RunLimit::steps(u64::MAX))
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Usage
+            );
+            // A terminal session ignores later paints instead of running again.
+            presenter.advance_fully(Duration::from_millis(40)).unwrap();
+            assert!(!presenter.running);
             assert_eq!(presenter.assembled().machine.virtual_time(), boundary);
             assert_eq!(std::fs::read(journal).unwrap().len(), 128);
         } else {

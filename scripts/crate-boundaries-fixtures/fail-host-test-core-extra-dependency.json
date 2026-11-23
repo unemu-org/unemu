@@ -18,29 +18,29 @@
       "dependencies": [
         {
           "name": "machine-view",
-          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e",
           "kind": null
         }
       ]
     },
     {
       "name": "machine-view",
-      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
-      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e#machine-view@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e",
       "manifest_path": "/dependencies/host/machine-view/Cargo.toml",
       "metadata": {},
       "dependencies": [
         {
           "name": "unemu-test-core",
-          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e",
           "kind": "dev"
         }
       ]
     },
     {
       "name": "unemu-test-core",
-      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#unemu-test-core@0.0.4",
-      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e#unemu-test-core@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cfa7c3a08c9307a5c542ef27ce44a7fef462578e",
       "manifest_path": "/dependencies/host/unemu-test-core/Cargo.toml",
       "metadata": {},
       "dependencies": [

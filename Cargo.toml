@@ -56,39 +56,39 @@ cpal = "=0.18.2"
 # pin is an exact revision, moved together with every pinned core. A bare path
 # dependency breaks nix build and CI. To develop against a local checkout of the
 # contract, add a gitignored [patch] override instead of editing this line.
-unemu-core-api = { version = "0.3", git = "https://github.com/unemu-org/unemu-core-api", rev = "afba6e6b217946eb57b9556e79a30bbe53c90fb4" }
+unemu-core-api = { version = "0.5", git = "https://github.com/unemu-org/unemu-core-api", rev = "316dd2a1f429cc3ef37a2bed203e89b2160079ff" }
 # The contract's storage and content over host files, from the contract's
 # repository at the same revision: it depends on that copy of the contract.
-unemu-core-files = { version = "0.3", git = "https://github.com/unemu-org/unemu-core-api", rev = "afba6e6b217946eb57b9556e79a30bbe53c90fb4" }
+unemu-core-files = { version = "0.5", git = "https://github.com/unemu-org/unemu-core-api", rev = "316dd2a1f429cc3ef37a2bed203e89b2160079ff" }
 # The NES core, from its own repository at an exact revision built against the
 # same release of the contract as the pin above: one copy of the contract in the
 # build. Moving this pin moves the NES golden's revision too. A bare path
 # dependency breaks nix build and CI; develop against a local checkout through a
 # gitignored [patch] override instead of editing this line.
-unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemunes", rev = "0dbf0d56c627ab62601fca1dcd64ec77f3e4643c" }
+unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemunes", rev = "ba0ece5d1bdad3d4ec813d5a795a54175118a46b" }
 
 # The PC core, from its own repository at one exact revision of its main with
 # green CI, the same revision in every line (repo-split.md §4.1). Never a bare
 # path, a branch or a tag; develop against a local core checkout through a
 # gitignored [patch] override. Moving this revision is a re-pin bead.
-assembly = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-audio = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-cpu = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-device = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-devices = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-journal-files = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-machine = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-machine-file = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-pc-config = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-pc-harness = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-unemu-pc-core = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-unemupc = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
-video = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "bba8ca6b4117fde9bc3880c5a3d5872cd6e644de" }
+assembly = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+audio = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+cpu = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+device = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+devices = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+journal-files = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+machine = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+machine-file = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+pc-config = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+pc-harness = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+unemu-pc-core = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+unemupc = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
+video = { version = "0.0.4", git = "https://github.com/unemu-org/unemupc", rev = "fc9c652e6876e7f0d189bf11d178f303ada19b13" }
 
 # Internal crates share the workspace version.
 media = { path = "crates/media", version = "0.0.4" }
-machine-view = { version = "0.0.4", git = "https://github.com/unemu-org/unemu-host", rev = "cac0317b2bf5fe1c02357eb6119dd9916283edf9" }
-unemu-test-core = { version = "0.0.4", git = "https://github.com/unemu-org/unemu-host", rev = "cac0317b2bf5fe1c02357eb6119dd9916283edf9" }
+machine-view = { version = "0.0.4", git = "https://github.com/unemu-org/unemu-host", rev = "cfa7c3a08c9307a5c542ef27ce44a7fef462578e" }
+unemu-test-core = { version = "0.0.4", git = "https://github.com/unemu-org/unemu-host", rev = "cfa7c3a08c9307a5c542ef27ce44a7fef462578e" }
 
 # Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
 [profile.dev]

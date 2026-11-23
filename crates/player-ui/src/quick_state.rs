@@ -7,19 +7,16 @@
 //! The slot is the file `quick.state` in the content's states directory,
 //! `states/CORE/aa/DIGEST/` ([`core_launch::Prepared::states_dir`]):
 //!
-//! ```text
-//! unemu-state 1
-//! IDENTITY
-//! the core's bytes, as its save_state wrote them
-//! ```
+//! New saves use `unemu-state 2\n`, an eight-byte little-endian length,
+//! the identity's UTF-8 bytes, then the core's state bytes. The original
+//! `unemu-state 1` format with a newline-delimited identity remains readable.
 //!
-//! The first line names this layout; the second is the machine's
-//! `state_identity()`, the token a state loads only into a machine with an
-//! equal one. Save state writes a file beside it under a temporary name and
-//! renames it over the slot, so a save that fails part way leaves the state
-//! saved before it whole. Load state compares the identity line with the
-//! running machine's before the core sees a byte, and refuses another as the
-//! player mock-up words it. Named slots and thumbnails are not part of this.
+//! `state_identity()` is an opaque token: a state loads only into a machine
+//! with an equal one, including every byte of whitespace. Save state writes
+//! a file beside it under a temporary name and renames it over the slot, so
+//! a save that fails part way leaves the state saved before it whole. Load
+//! compares identities before the core sees a byte, and refuses another as
+//! the player mock-up words it. Named slots and thumbnails are not part of this.
 
 use crate::{wake, Dialog, MessageBox, Player};
 use std::{
@@ -36,10 +33,14 @@ pub(crate) const FILE_NAME: &str = "quick.state";
 /// left by a save cut short is overwritten by the next save.
 const PARTIAL_NAME: &str = "quick.state.partial";
 /// The layout's first line, without its newline.
-const FIRST_LINE: &[u8] = b"unemu-state 1";
-/// The most the two lines may take together. Longer is not a slot's file,
-/// and the player reads no further on the window's thread to find out.
+const FIRST_LINE: &[u8] = b"unemu-state 2";
+const LEGACY_FIRST_LINE: &[u8] = b"unemu-state 1";
+/// The original format bounded its two newline-delimited header lines.
 const HEADER_LIMIT: u64 = 4096;
+/// The contract sets no size limit. 64 KiB leaves ample room for an opaque
+/// release/config/media compatibility token, which names state dependencies
+/// rather than containing the state, while bounding untrusted header reads.
+const IDENTITY_LIMIT: u64 = 64 * 1024;
 
 /// The refusal's lead and the line the player mock-up closes it with: a
 /// refused load leaves the machine as it was.
@@ -56,28 +57,54 @@ pub(crate) fn path(states: &Path) -> PathBuf {
     states.join(FILE_NAME)
 }
 
-/// Read a slot's two lines from `file` and give its identity line, leaving
-/// `file` at the core's bytes; `None` when the file does not have the slot's
-/// layout: another first line, no end to the identity line within the
-/// header's limit (a file cut short), or an identity that is not text.
+/// Read either header format, leaving `file` at the core's state bytes.
+/// A truncated header or an unknown format is not a saved-state slot.
 fn read_header(file: &mut impl BufRead) -> io::Result<Option<String>> {
     let mut header = Vec::new();
-    let mut lines = file.take(HEADER_LIMIT);
-    lines.read_until(b'\n', &mut header)?;
-    if header.strip_suffix(b"\n") != Some(FIRST_LINE) {
-        return Ok(None);
-    }
+    file.take((FIRST_LINE.len() + 1) as u64)
+        .read_until(b'\n', &mut header)?;
     let mut identity = Vec::new();
-    lines.read_until(b'\n', &mut identity)?;
-    if identity.pop() != Some(b'\n') {
-        return Ok(None);
+    match header.strip_suffix(b"\n") {
+        Some(LEGACY_FIRST_LINE) => {
+            file.take(HEADER_LIMIT - header.len() as u64)
+                .read_until(b'\n', &mut identity)?;
+            if identity.pop() != Some(b'\n') {
+                return Ok(None);
+            }
+        }
+        Some(FIRST_LINE) => {
+            let mut length = [0; 8];
+            if let Err(error) = file.read_exact(&mut length) {
+                return if error.kind() == io::ErrorKind::UnexpectedEof {
+                    Ok(None)
+                } else {
+                    Err(error)
+                };
+            }
+            let length = u64::from_le_bytes(length);
+            if length > IDENTITY_LIMIT {
+                return Ok(None);
+            }
+            file.take(length).read_to_end(&mut identity)?;
+            if identity.len() as u64 != length {
+                return Ok(None);
+            }
+        }
+        _ => return Ok(None),
     }
     Ok(String::from_utf8(identity).ok())
 }
 
+fn write_header(out: &mut impl Write, identity: &str) -> io::Result<()> {
+    out.write_all(FIRST_LINE)?;
+    out.write_all(b"\n")?;
+    out.write_all(&(identity.len() as u64).to_le_bytes())?;
+    out.write_all(identity.as_bytes())
+}
+
 /// Write the slot through a temporary file in the same directory and a
 /// rename, so the slot holds either the state saved before or the whole new
-/// one. `body` writes the core's bytes after the two lines.
+/// one. `body` writes the core's bytes after the identity.
 fn write_atomically(
     dir: &Path,
     identity: &str,
@@ -89,11 +116,7 @@ fn write_atomically(
     let written = (|| {
         let file = fs::File::create(&partial).map_err(|error| error.to_string())?;
         let mut out = BufWriter::new(file);
-        out.write_all(FIRST_LINE)
-            .and_then(|()| out.write_all(b"\n"))
-            .and_then(|()| out.write_all(identity.as_bytes()))
-            .and_then(|()| out.write_all(b"\n"))
-            .map_err(|error| error.to_string())?;
+        write_header(&mut out, identity).map_err(|error| error.to_string())?;
         body(&mut out)?;
         let file = out.into_inner().map_err(|error| error.to_string())?;
         // Durable before the rename, so the slot never names a file whose
@@ -124,12 +147,9 @@ impl Player {
         };
         let identity = session.state_identity();
         let saved = match identity.as_deref() {
-            Some(identity) if !identity.contains(['\n', '\r']) => {
-                write_atomically(states, identity, |out| {
-                    session.save_state(out).map_err(|error| error.to_string())
-                })
-            }
-            Some(_) => Err("the machine's state identity is not one line".into()),
+            Some(identity) => write_atomically(states, identity, |out| {
+                session.save_state(out).map_err(|error| error.to_string())
+            }),
             None => Err("the machine names no state identity".into()),
         };
         match saved {
@@ -153,7 +173,7 @@ impl Player {
     }
 
     /// Machine › Load state: the quick slot's state, at host time `elapsed`,
-    /// once its identity line is the running machine's. A refusal shows the
+    /// once its identity equals the running machine's. A refusal shows the
     /// Load state box and leaves the machine as it was.
     pub(crate) fn load_state(&mut self, elapsed: Duration) {
         if !self.offers.saved_state || !self.state_saved {
@@ -241,10 +261,62 @@ pub(crate) fn partial_path(states: &Path) -> PathBuf {
 
 #[cfg(test)]
 pub(crate) fn encode(identity: &str, state: &[u8]) -> Vec<u8> {
-    let mut out = FIRST_LINE.to_vec();
-    out.push(b'\n');
-    out.extend_from_slice(identity.as_bytes());
-    out.push(b'\n');
+    let mut out = Vec::new();
+    write_header(&mut out, identity).unwrap();
     out.extend_from_slice(state);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_identity_is_refused_before_reading_its_bytes() {
+        struct HeaderOnly(io::Cursor<Vec<u8>>);
+
+        impl Read for HeaderOnly {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                assert!(
+                    self.0.position() < (FIRST_LINE.len() + 1 + 8) as u64,
+                    "oversized identity payload must not be read"
+                );
+                self.0.read(out)
+            }
+        }
+
+        impl BufRead for HeaderOnly {
+            fn fill_buf(&mut self) -> io::Result<&[u8]> {
+                self.0.fill_buf()
+            }
+
+            fn consume(&mut self, amount: usize) {
+                self.0.consume(amount);
+            }
+        }
+
+        for length in [1u64 << 32, u64::MAX, 64 * 1024 + 1] {
+            let bytes = [FIRST_LINE, b"\n", &length.to_le_bytes(), b"tiny"].concat();
+            let mut file = HeaderOnly(io::Cursor::new(bytes));
+            assert_eq!(read_header(&mut file).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn bounded_identity_leaves_the_core_state_unread() {
+        for length in [0, 64 * 1024] {
+            let identity = "x".repeat(length);
+            let mut file = io::Cursor::new(encode(&identity, b"core state"));
+            assert_eq!(read_header(&mut file).unwrap(), Some(identity));
+            let mut state = Vec::new();
+            file.read_to_end(&mut state).unwrap();
+            assert_eq!(state, b"core state");
+        }
+    }
+
+    #[test]
+    fn short_identity_is_damaged() {
+        let bytes = [FIRST_LINE, b"\n", &8u64.to_le_bytes(), b"tiny"].concat();
+        assert_eq!(read_header(&mut io::Cursor::new(bytes)).unwrap(), None);
+    }
 }

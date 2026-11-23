@@ -68,10 +68,10 @@ impl Player {
             )
         });
         if let Some(picture) = picture {
-            let fresh = self
-                .texture
-                .as_ref()
-                .is_none_or(|(_, serial)| *serial != picture.serial);
+            let fresh = self.texture.as_ref().is_none_or(|(texture, serial)| {
+                *serial != picture.serial
+                    || texture.size() != [picture.width as usize, picture.height as usize]
+            });
             if fresh {
                 let image = image(picture);
                 match &mut self.texture {

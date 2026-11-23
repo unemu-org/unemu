@@ -24,7 +24,7 @@ struct HostMouse {
 impl HostMouse {
     fn new(enabled: bool) -> Self {
         Self {
-            capture: PointerCapture::new(enabled.then_some(PortId(1))),
+            capture: PointerCapture::new(enabled.then_some((PortId(1), 3))),
             device: PcMouse::default(),
         }
     }

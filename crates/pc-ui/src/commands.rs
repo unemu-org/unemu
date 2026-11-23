@@ -9,6 +9,7 @@ pub enum State {
     Stopped,
     Running,
     Paused,
+    Finished,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,21 +152,21 @@ impl Enablement {
             | Command::ResetMachine
             | Command::ShowSource
             | Command::NewFromImage => self.state == State::Stopped,
-            Command::Pause
-            | Command::Stop
-            | Command::Reset
-            | Command::PowerCycle
-            | Command::Release
-            | Command::Speed(_)
-            | Command::FastForward => self.state != State::Stopped,
+            Command::Stop | Command::PowerCycle | Command::Release => self.state != State::Stopped,
+            Command::Pause | Command::Reset | Command::Speed(_) | Command::FastForward => {
+                matches!(self.state, State::Running | State::Paused)
+            }
             Command::Insert(unit)
             | Command::CreateFromFiles(unit)
             | Command::InsertFile(unit)
             | Command::CatalogueDisk(unit, _)
             | Command::CatalogueAll(unit)
-            | Command::Eject(unit) => self.floppy.get(unit as usize).copied().unwrap_or(false),
+            | Command::Eject(unit) => {
+                self.state != State::Finished
+                    && self.floppy.get(unit as usize).copied().unwrap_or(false)
+            }
             Command::InsertSet(unit) | Command::WriteMode(unit) | Command::Next(unit) => {
-                self.state != State::Stopped
+                matches!(self.state, State::Running | State::Paused)
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)
             }
             Command::Mute => self.state != State::Stopped && self.audio,
@@ -178,6 +179,39 @@ impl Enablement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finished_machine_allows_restart_and_stop_but_no_live_operations() {
+        let model = Enablement {
+            state: State::Finished,
+            ready: true,
+            floppy: [true; 2],
+            audio: true,
+        };
+        for command in [Command::Stop, Command::PowerCycle, Command::Release] {
+            assert!(model.allows(command), "{command:?}");
+        }
+        for command in [
+            Command::Start,
+            Command::Pause,
+            Command::Reset,
+            Command::FastForward,
+            Command::Speed(machine_view::pacing::Speed::Normal),
+            Command::Insert(0),
+            Command::CreateFromFiles(0),
+            Command::InsertFile(0),
+            Command::InsertSet(0),
+            Command::WriteMode(0),
+            Command::Next(0),
+            Command::CatalogueDisk(0, 0),
+            Command::CatalogueAll(0),
+            Command::Eject(0),
+            Command::SaveState,
+            Command::LoadState,
+        ] {
+            assert!(!model.allows(command), "{command:?}");
+        }
+    }
+
     #[test]
     fn enablement_requires_ready_firmware_and_live_capabilities() {
         for state in [State::Stopped, State::Running, State::Paused] {

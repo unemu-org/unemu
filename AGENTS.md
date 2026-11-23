@@ -14,9 +14,11 @@ pinned to exact revisions in `Cargo.toml` and `Cargo.lock`.
 
 The neutral session `machine-view` and synthetic `unemu-test-core` come from
 [unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
-pinned to `cac0317b2bf5fe1c02357eb6119dd9916283edf9` in `Cargo.toml` and
-`Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
-first, then re-pin this workspace and run its gate, as for a core change.
+pinned to `cfa7c3a08c9307a5c542ef27ce44a7fef462578e` in `Cargo.toml` and
+`Cargo.lock`. Both use contract 0.5, pinned with `unemu-core-files` to
+`316dd2a1f429cc3ef37a2bed203e89b2160079ff` (tag `v0.5.0`). They are not
+workspace crates. Land their changes in unemu-host first, then re-pin this
+workspace and run its gate, as for a core change.
 
 CPU, devices, machine configuration and the core's tests belong in `unemupc`.
 Its own rules apply there, including its x86jit dependency workflow. Land

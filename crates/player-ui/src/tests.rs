@@ -1268,7 +1268,7 @@ fn save_state_run_on_and_load_state_bring_the_saved_picture_back() {
     assert!(!rig.player.has_dialog());
     assert_eq!(rig.player.message(), "Opened machine.utc");
 
-    // Save: the two lines, then the core's own bytes, at the content's
+    // Save: the header and identity, then the core's bytes, at the content's
     // states directory.
     let (texts, commands) = open_menu(&rig.player, "Machine", Some("Save state"));
     assert!(texts.contains(&"Load state".to_owned()));
@@ -1324,6 +1324,67 @@ fn save_state_run_on_and_load_state_bring_the_saved_picture_back() {
 }
 
 #[test]
+fn quick_state_preserves_opaque_identity_and_compares_it_exactly() {
+    let mut rig = rig("saved-state");
+    let token = "opaque\r\nzażółć 🎮\0".repeat(400);
+    let identity = std::rc::Rc::new(std::cell::RefCell::new(token.clone()));
+    let machine = BoundaryMachine {
+        inner: core_launch::start(&rig.player.prepared).unwrap(),
+        reject_input: false,
+        identity: Some(identity.clone()),
+        resized: Default::default(),
+    };
+    let mut session = Session::new(
+        Box::new(machine) as Box<dyn unemu_core_api::Machine>,
+        DisplayId(0),
+        &mut io::sink(),
+    )
+    .unwrap();
+    session.full_slices = true;
+    session.next_paint = Some(rig.at);
+    rig.player.session = Some(session);
+    rig.run(100);
+    let saved_at = rig.now();
+    let picture = pixels(&mut rig);
+    rig.command(Command::SaveState);
+    assert_eq!(rig.player.message(), "State saved");
+    assert!(!rig.player.has_dialog());
+    rig.run(100);
+    let later = rig.now();
+    *identity.borrow_mut() = token.replace('\r', "\n");
+    rig.command(Command::LoadState);
+    assert!(message_box(&rig)
+        .1
+        .contains("another release of the core, or for another setup"));
+    assert_eq!(rig.now(), later);
+    rig.player.dialog = None;
+    *identity.borrow_mut() = token;
+    rig.command(Command::LoadState);
+    assert_eq!(rig.player.message(), "State loaded");
+    assert!(!rig.player.has_dialog());
+    assert_eq!(rig.now(), saved_at);
+    assert_eq!(pixels(&mut rig), picture);
+}
+
+#[test]
+fn quick_state_reads_the_original_line_delimited_format() {
+    let mut rig = rig("saved-state");
+    rig.run(100);
+    let saved_at = rig.now();
+    let identity = rig.player.session().state_identity().unwrap();
+    let mut core = Vec::new();
+    rig.player.session().save_state(&mut core).unwrap();
+    rig.command(Command::SaveState);
+    let mut old = format!("unemu-state 1\n{identity}\n").into_bytes();
+    old.extend_from_slice(&core);
+    std::fs::write(quick_state(&rig), old).unwrap();
+    rig.run(100);
+    rig.command(Command::LoadState);
+    assert_eq!(rig.player.message(), "State loaded");
+    assert_eq!(rig.now(), saved_at);
+}
+
+#[test]
 fn a_state_of_another_identity_or_a_damaged_file_is_refused_and_the_machine_runs_on() {
     let mut rig = rig("saved-state");
     rig.run(100);
@@ -1334,23 +1395,48 @@ fn a_state_of_another_identity_or_a_damaged_file_is_refused_and_the_machine_runs
     let core = good[quick_state::encode(&identity, &[]).len()..].to_vec();
     rig.run(200);
     for (file, reason) in [
-        // Bytes the core itself would take: only the identity line says
+        // Bytes the core itself would take: only the stored identity says
         // they are another machine's.
         (
             quick_state::encode("unemu-test-core 0.0.0 script other", &core),
             Some("this state was saved by another release of the core, or for another setup"),
         ),
         (b"unemu-state 1\ncut short".to_vec(), Some(DAMAGED)),
+        (b"unemu-state 2\n\x01\x00".to_vec(), Some(DAMAGED)),
+        (
+            [b"unemu-state 2\n".as_slice(), &8u64.to_le_bytes(), b"tiny"].concat(),
+            Some(DAMAGED),
+        ),
+        (
+            [
+                b"unemu-state 2\n".as_slice(),
+                &(64 * 1024 + 1u64).to_le_bytes(),
+                b"tiny",
+            ]
+            .concat(),
+            Some(DAMAGED),
+        ),
+        (
+            [b"unemu-state 2\n".as_slice(), &u64::MAX.to_le_bytes()].concat(),
+            Some(DAMAGED),
+        ),
+        (
+            [b"unemu-state 2\n".as_slice(), &1u64.to_le_bytes(), &[0xff]].concat(),
+            Some(DAMAGED),
+        ),
         (
             quick_state::encode(&identity, &core).split_off(1),
             Some(DAMAGED),
         ),
         (
-            [b"unemu-state 2".as_slice(), &good[13..]].concat(),
+            [b"unemu-state 3".as_slice(), &good[13..]].concat(),
             Some(DAMAGED),
         ),
         // An identity line longer than the header may be.
-        (quick_state::encode(&"x".repeat(5000), &core), Some(DAMAGED)),
+        (
+            format!("unemu-state 1\n{}\n", "x".repeat(5000)).into_bytes(),
+            Some(DAMAGED),
+        ),
         // The core's own refusal of its bytes, cut short.
         (
             quick_state::encode(&identity, &core[..core.len() / 2]),
@@ -1562,4 +1648,254 @@ fn a_machine_started_from_parts_has_no_place_for_saved_states_and_is_named_by_it
     // The file's own start offers them.
     let player = Player::start(opened, PadBindings::defaults(), &mut io::sink()).unwrap();
     assert!(player.offers().saved_state);
+}
+
+/// Changes only contract-boundary observations, leaving the scripted machine
+/// responsible for execution and persistence.
+struct BoundaryMachine {
+    inner: Box<dyn unemu_core_api::Machine>,
+    reject_input: bool,
+    identity: Option<std::rc::Rc<std::cell::RefCell<String>>>,
+    resized: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl unemu_core_api::Machine for BoundaryMachine {
+    fn description(&self) -> &MachineDescription {
+        self.inner.description()
+    }
+    fn now(&self) -> unemu_core_api::Ticks {
+        self.inner.now()
+    }
+    fn steps(&self) -> u64 {
+        self.inner.steps()
+    }
+    fn status(&self) -> unemu_core_api::Status {
+        self.inner.status()
+    }
+    fn run(
+        &mut self,
+        limit: unemu_core_api::RunLimit,
+    ) -> Result<unemu_core_api::Stop, unemu_core_api::Error> {
+        self.inner.run(limit)
+    }
+    fn frame(
+        &mut self,
+        display: DisplayId,
+    ) -> Result<unemu_core_api::Frame<'_>, unemu_core_api::Error> {
+        let frame = self.inner.frame(display)?;
+        if self.resized.get() {
+            Ok(unemu_core_api::Frame::new(
+                frame.height,
+                frame.width,
+                frame.pixels,
+                (3, 4),
+                frame.serial,
+            )
+            .with_visible(unemu_core_api::FrameArea::new(
+                1,
+                2,
+                frame.height - 2,
+                frame.width - 4,
+            )))
+        } else {
+            Ok(frame)
+        }
+    }
+    fn drain_audio(&mut self, out: &mut Vec<[i16; 2]>) -> Result<(), unemu_core_api::Error> {
+        self.inner.drain_audio(out)
+    }
+    fn set_outputs(&mut self, outputs: unemu_core_api::Outputs) {
+        self.inner.set_outputs(outputs);
+    }
+    fn input(&mut self, event: unemu_core_api::InputEvent) -> Result<(), unemu_core_api::Error> {
+        if self.reject_input {
+            Err(unemu_core_api::Error::new(
+                unemu_core_api::ErrorKind::Usage,
+                "input refused by machine",
+            ))
+        } else {
+            self.inner.input(event)
+        }
+    }
+    fn slot_states(&mut self) -> Vec<SlotState> {
+        self.inner.slot_states()
+    }
+    fn add_medium(
+        &mut self,
+        slot: SlotId,
+        medium: unemu_core_api::NewMedium<'_>,
+    ) -> Result<usize, unemu_core_api::Error> {
+        self.inner.add_medium(slot, medium)
+    }
+    fn change_medium(
+        &mut self,
+        slot: SlotId,
+        action: MediaAction,
+    ) -> Result<(), unemu_core_api::Error> {
+        self.inner.change_medium(slot, action)
+    }
+    fn reset(&mut self, kind: ResetKind) -> Result<(), unemu_core_api::Error> {
+        self.inner.reset(kind)
+    }
+    fn state_identity(&self) -> Option<String> {
+        self.identity
+            .as_ref()
+            .map(|token| token.borrow().clone())
+            .or_else(|| self.inner.state_identity())
+    }
+    fn save_state(&mut self, out: &mut dyn io::Write) -> Result<(), unemu_core_api::Error> {
+        self.inner.save_state(out)
+    }
+    fn load_state(&mut self, state: &mut dyn io::Read) -> Result<(), unemu_core_api::Error> {
+        self.inner.load_state(state)
+    }
+    fn finish(&mut self) -> Result<unemu_core_api::Finished, unemu_core_api::Error> {
+        self.inner.finish()
+    }
+    fn drain_messages(&mut self, out: &mut Vec<unemu_core_api::Message>) {
+        self.inner.drain_messages(out);
+    }
+}
+
+fn boundary_machine(rig: &mut Rig, reject_input: bool) -> std::rc::Rc<std::cell::Cell<bool>> {
+    let resized = std::rc::Rc::new(std::cell::Cell::new(false));
+    let machine: Box<dyn unemu_core_api::Machine> = Box::new(BoundaryMachine {
+        inner: core_launch::start(&rig.player.prepared).unwrap(),
+        reject_input,
+        identity: None,
+        resized: resized.clone(),
+    });
+    let mut session = Session::new(machine, DisplayId(0), &mut io::sink()).unwrap();
+    session.full_slices = true;
+    session.next_paint = Some(rig.at);
+    rig.player.session = Some(session);
+    resized
+}
+
+#[test]
+fn finished_machine_keeps_its_picture_and_offers_restart_or_stop() {
+    let mut rig = rig("resets soft,hard\nsaved-state\nkeyboard 0 Keyboard");
+    rig.run(20);
+    let pixels = rig.player.session().picture().unwrap().clone();
+    rig.player.session().machine_mut().finish().unwrap();
+    rig.player.guest_key(KeyCode::KeyA, ElementState::Released);
+    assert!(rig.player.session().error.is_none());
+    rig.run(20);
+    assert_eq!(rig.player.condition(), Condition::Stopped);
+    assert_eq!(rig.player.message(), STOPPED);
+    assert_eq!(rig.player.session().picture(), Some(&pixels));
+    assert!(!rig.player.has_dialog());
+    for label in ["Pause", "Reset", "Save state", "Load state"] {
+        assert!(
+            !item(&rig.player.machine_entries(), label).enabled,
+            "{label}"
+        );
+    }
+    rig.command(Command::Reset);
+    assert_eq!(rig.player.message(), STOPPED);
+    rig.command(Command::PowerCycle);
+    assert!(rig.player.running());
+    assert_eq!(rig.now(), 0);
+    rig.player.session().machine_mut().finish().unwrap();
+    rig.run(20);
+    assert_eq!(
+        rig.command(Command::Stop),
+        Some(Request::Stopped { failure: None })
+    );
+}
+
+#[test]
+fn input_refusal_is_shown_once_even_while_paused() {
+    for paused in [false, true] {
+        let mut rig = rig("keyboard 0 Keyboard");
+        boundary_machine(&mut rig, true);
+        rig.run(20);
+        if paused {
+            rig.command(Command::Pause);
+        }
+        let now = rig.now();
+        rig.player.guest_key(KeyCode::KeyA, ElementState::Released);
+        assert!(rig.player.session().error.is_some());
+        rig.run(20);
+        assert!(!rig.player.running());
+        assert!(!rig.player.paused());
+        assert!(rig.player.message().contains("input refused by machine"));
+        assert!(message_box(&rig).1.contains("input refused by machine"));
+        rig.player.dialog = None;
+        rig.player.guest_key(KeyCode::KeyB, ElementState::Pressed);
+        rig.run(20);
+        assert!(!rig.player.has_dialog());
+        assert_eq!(rig.now(), now);
+        assert!(
+            matches!(rig.command(Command::Stop), Some(Request::Stopped { failure: Some(error) }) if error.contains("input refused by machine"))
+        );
+    }
+}
+
+#[test]
+fn geometry_change_with_equal_serial_refreshes_texture_and_layout() {
+    let mut rig = rig("");
+    let resized = boundary_machine(&mut rig, false);
+    rig.run(20);
+    draw_screen(&mut rig, egui::vec2(640.0, 480.0), None);
+    let serial = rig.player.session().picture().unwrap().serial;
+    assert_eq!(rig.player.texture.as_ref().unwrap().0.size(), [64, 48]);
+    resized.set(true);
+    let at = rig.at;
+    rig.player
+        .session()
+        .advance_fully_with_warnings(at, &mut io::sink())
+        .unwrap();
+    assert_eq!(rig.player.session().picture().unwrap().serial, serial);
+    draw_screen(&mut rig, egui::vec2(640.0, 480.0), None);
+    assert_eq!(rig.player.texture.as_ref().unwrap().0.size(), [48, 64]);
+    let layout = rig.player.layout.unwrap();
+    assert_eq!(layout.source, unemu_core_api::FrameArea::new(1, 2, 46, 60));
+    let cropped_aspect = (3.0 / 4.0) * (46.0 / 48.0) / (60.0 / 64.0);
+    assert!((layout.dest.width / layout.dest.height - cropped_aspect).abs() < 0.001);
+}
+
+#[test]
+fn media_selection_depends_on_changes_independently_of_additions() {
+    for changes in [false, true] {
+        for additions in [false, true] {
+            let mut rig = rig(&two_disks());
+            let mut description = rig.player.session().machine().description().clone();
+            description.features = description
+                .features
+                .with_media_changes(changes)
+                .with_media_additions(additions);
+            let (offers, pads, slots) = describe(&description, DisplayId(0), false);
+            (rig.player.offers, rig.player.pads, rig.player.slots) = (offers, pads, slots);
+            rig.run(20);
+            assert_eq!(
+                rig.player.offers().media,
+                if changes {
+                    vec![SlotId(0), SlotId(1)]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(rig.player.media_entries().is_some(), changes);
+            rig.command(Command::Next(SlotId(0)));
+            rig.run(20);
+            assert_eq!(
+                rig.player.slots[0].state.as_ref().unwrap().inserted,
+                Some(usize::from(changes))
+            );
+            if changes {
+                assert_eq!(
+                    labels(&rig.player.media_entries().unwrap()),
+                    [
+                        "Eject",
+                        "Next in catalogue",
+                        "Disk 1",
+                        "Disk 2",
+                        "Eject",
+                        "Next in catalogue"
+                    ]
+                );
+            }
+        }
+    }
 }
