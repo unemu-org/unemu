@@ -1577,9 +1577,9 @@ cargo run --offline -p window -- recipe check my.media.toml --deny-drift
 ```
 
 A folder is checked with every `*.media.toml`, `*.firmware.toml`,
-`*.machine.toml` and `*.work.toml` below it (hidden files and folders and
-lock folders skipped); a file named on the command line is read whatever
-its name. Each finding is one line, `FILE:LINE:COLUMN:
+`*.machine.toml` (machine templates in recipe 1.1) and `*.work.toml` below it
+(hidden files and folders and lock folders skipped); a file named on the
+command line is read whatever its name. Each finding is one line, `FILE:LINE:COLUMN:
 error[6.11.N] KEY.PATH: message`, with 1-based array indices
 (`step[1].members[2].path`); every finding is reported, each once. Then one
 line per file: `ok` or the number of findings, its kind, and for a recipe
@@ -1659,8 +1659,8 @@ beside them (`title`, `sort-title`, `series`, `players MIN MAX`,
 ends in `# from NAME.work.toml`. The recipe must pass `recipe check`: if it
 does not, `show` prints the check's report instead and exits 1. Exit 2 on a
 usage error, a file that cannot be read, a folder, or a file that is not a
-media recipe (a firmware recipe or a work file has no title record to
-merge).
+media recipe (a firmware recipe, machine recipe or work file has no title
+record to merge).
 
 For a pinned recipe `show` prints the record of its lock, which a build
 writes, not today's merge: the first line names the digest, the second is
@@ -2283,7 +2283,14 @@ unemu recipe build recipes/freedos/freedos-1.4-720k.media.toml --library /path/t
   an artifact names each blob once. `REF` is the publisher's
   namespace, `recipes/` and the output's path after its first component,
   with the output's tag: `private/media/ibm-pc/windows` at `3.0-1.2m-r1`
-  is published as `unemu/recipes/media/ibm-pc/windows:3.0-1.2m-r1`. The
+  is published as `unemu/recipes/media/ibm-pc/windows:3.0-1.2m-r1` in 1.0.
+  Version 1.1 uses `NAMESPACE/KIND/PLATFORM/ID` for all kinds, including
+  `machines`, with one or more namespace segments. It inserts `recipes/`
+  after the whole publisher namespace: an output such as
+  `unemu/experimental/media/ibm-pc/demo:r1` maps to
+  `unemu/experimental/recipes/media/ibm-pc/demo:r1`. Namespace segments cannot
+  be `media`, `firmware`, `machines` or `recipes`. One-segment names retain
+  the same mapping as 1.0. The
   parts are staged as untagged blobs in `--store DIR` or the default store
   (created when missing) and uploaded as `image push` uploads; the manifest
   goes last. The guard refuses, before anything is sent: a part that is

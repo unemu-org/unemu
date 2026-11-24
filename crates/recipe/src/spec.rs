@@ -34,6 +34,12 @@ pub enum Text {
     Digest,
     /// An OCI repository of four components: `unemu/media/ibm-pc/freedos`.
     Repository,
+    /// A kind-qualified output repository with one or more namespace segments.
+    Repository11,
+    /// An immutable machine version tag, including prerelease and build identifiers.
+    SemVer,
+    /// A firmware or media image with an immutable revision tag.
+    UseImage,
     /// A platform id: lower-case letters, digits and `-`, `_`, `.` after the
     /// first character, at most 64.
     Platform,
@@ -198,6 +204,9 @@ pub const MAX_RELEASE: usize = 128 - 2 - 19;
 pub const VERSION: &str = "1.1";
 pub const VERSIONS: &[&str] = &["1.0", VERSION];
 const RECIPE: Field = req("recipe", Ty::Enum(&["1.0"]));
+/// Artifact kind and recipe segments cannot be namespace segments.
+pub const RESERVED_NAMESPACE_SEGMENTS: &[&str] = &["media", "firmware", "machines", "recipes"];
+
 const RECIPE_1_1: Field = req("recipe", Ty::Enum(&[VERSION]));
 
 /// `[media]`, `[firmware]`: the output's identity (recipes §6.3).
@@ -210,6 +219,62 @@ pub static IDENTITY: Table = table(
         req("revision", Ty::Int { min: 1, max: MAX }),
         opt("digest", Ty::Str(Text::Digest)),
         opt("min_app_version", Ty::Str(Text::Version)),
+    ],
+);
+
+static IDENTITY_1_1: Table = table(
+    "identity",
+    &[
+        req("name", Ty::Str(Text::Repository11)),
+        req("platform", Ty::Str(Text::Platform)),
+        opt("release", Ty::Str(Text::Release)),
+        req("revision", Ty::Int { min: 1, max: MAX }),
+        opt("digest", Ty::Str(Text::Digest)),
+        opt("min_app_version", Ty::Str(Text::Version)),
+    ],
+);
+
+pub static MACHINE_IDENTITY: Table = table(
+    "machine-identity",
+    &[
+        req("name", Ty::Str(Text::Repository11)),
+        req("platform", Ty::Str(Text::Platform)),
+        req("version", Ty::Str(Text::SemVer)),
+        opt("digest", Ty::Str(Text::Digest)),
+        opt("min_app_version", Ty::Str(Text::Version)),
+    ],
+);
+
+static TEMPLATE_DISK: Table = table(
+    "template-disk",
+    &[
+        req("id", Ty::Str(Text::Id)),
+        req("size", Ty::Int { min: 1, max: MAX }),
+    ],
+);
+
+static TEMPLATE: Table = table(
+    "template",
+    &[
+        req("config", Ty::Str(Text::Id)),
+        opt(
+            "disks",
+            Ty::Array {
+                item: &Ty::Table(&TEMPLATE_DISK),
+                min: 0,
+            },
+        ),
+        opt("title", Ty::Str(Text::Line128)),
+        opt("description", Ty::Str(Text::Text)),
+        opt("labels", LABELS),
+    ],
+);
+
+static USE: Table = table(
+    "use",
+    &[
+        req("image", Ty::Str(Text::UseImage)),
+        req("digest", Ty::Str(Text::Digest)),
     ],
 );
 
@@ -611,6 +676,25 @@ pub static FIRMWAREFILE: Table = table(
     ],
 );
 
+/// A machine template has no guest steps or work file.
+pub static MACHINEFILE: Table = table(
+    "machinefile",
+    &[
+        RECIPE_1_1,
+        req("machine", Ty::Table(&MACHINE_IDENTITY)),
+        req("template", Ty::Table(&TEMPLATE)),
+        opt("license", Ty::Table(&LICENSE)),
+        opt("input", INPUTS),
+        opt(
+            "use",
+            Ty::Map {
+                key: MapKey::Id,
+                value: &Ty::Table(&USE),
+            },
+        ),
+    ],
+);
+
 static WORK: Table = table("work", &[req("id", Ty::Str(Text::Id))]);
 
 /// A work file (recipes §6.16): what the releases of one work share.
@@ -625,8 +709,7 @@ pub static WORK_FILE: Table = table(
     ],
 );
 
-/// The identity tables, one per kind; `machine` is reserved for the
-/// Machinefile, which version 1.0 does not specify (recipes §6.2, §11).
+/// The identity tables, one per kind; machines require recipe 1.1.
 pub const IDENTITIES: &[&str] = &["media", "firmware", "machine"];
 
 /// The top-level keys only a Mediafile has, and only a Firmwarefile has.
@@ -650,6 +733,9 @@ impl Text {
             Self::Crc32 => hex(value, 8),
             Self::Digest => value.strip_prefix("sha256:").is_some_and(|h| hex(h, 64)),
             Self::Repository => repository(value),
+            Self::Repository11 => repository_1_1(value),
+            Self::SemVer => image_store::Store::is_version_tag(value),
+            Self::UseImage => use_image(value),
             Self::Platform => platform(value),
             Self::Release => value.len() <= MAX_RELEASE && image_store::tag::valid_release(value),
             Self::Version => version(value),
@@ -684,6 +770,9 @@ impl Text {
             Self::Md5 => "expected 32 lower-case hexadecimal digits",
             Self::Crc32 => "expected 8 lower-case hexadecimal digits",
             Self::Digest => "expected sha256: and 64 lower-case hexadecimal digits",
+            Self::Repository11 => "expected NAMESPACE/KIND/PLATFORM/ID in the OCI grammar, at most 255 characters; KIND is media, firmware or machines; namespace segments cannot be media, firmware, machines or recipes",
+            Self::SemVer => "expected a Semantic Versioning 2.0.0 version",
+            Self::UseImage => "expected an immutable firmware image NAMESPACE/firmware/PLATFORM/ID:[RELEASE-]rN or media image NAMESPACE/media/PLATFORM/ID:RELEASE-rN; machine uses and aliases are not permitted",
             Self::Repository => "expected a repository of four components in the OCI grammar, such as unemu/media/ibm-pc/freedos",
             Self::Platform => "expected a platform id: lower-case letters and digits, then also '-', '_' and '.', at most 64 characters",
             Self::Release => "expected a release of at most 107 characters: parts of lower-case letters and digits joined by '-', '.' or '_', none of them r followed by digits",
@@ -743,6 +832,53 @@ fn component(part: &str) -> bool {
 
 fn repository(value: &str) -> bool {
     value.len() <= 255 && value.split('/').count() == 4 && value.split('/').all(component)
+}
+
+pub(crate) fn namespace_valid(namespace: &str) -> bool {
+    namespace
+        .split('/')
+        .all(|part| component(part) && !RESERVED_NAMESPACE_SEGMENTS.contains(&part))
+}
+
+fn repository_1_1(value: &str) -> bool {
+    let parts: Vec<_> = value.split('/').collect();
+    value.len() <= 255
+        && parts.len() >= 4
+        && parts.iter().all(|part| component(part))
+        && namespace_valid(&parts[..parts.len() - 3].join("/"))
+        && ["media", "firmware", "machines"].contains(&parts[parts.len() - 3])
+}
+
+/// Split a checked repository at its version's namespace boundary.
+pub(crate) fn namespace<'a>(name: &'a str, version: &str) -> (&'a str, &'a str) {
+    if version == "1.1" {
+        if let Some(namespace) = name.rsplitn(4, '/').nth(3) {
+            return (namespace, &name[namespace.len() + 1..]);
+        }
+    }
+    name.split_once('/').unwrap_or(("", name))
+}
+
+fn use_image(value: &str) -> bool {
+    let Some((name, tag)) = value.rsplit_once(':') else {
+        return false;
+    };
+    if !repository_1_1(name) || tag.len() > 128 {
+        return false;
+    }
+    matches!(
+        (name.rsplit('/').nth(2), image_store::tag::parse(tag)),
+        (
+            Some("firmware"),
+            Some(image_store::tag::Kind::Revision { .. })
+        ) | (
+            Some("media"),
+            Some(image_store::tag::Kind::Revision {
+                release: Some(_),
+                ..
+            })
+        )
+    )
 }
 
 fn platform(value: &str) -> bool {
@@ -881,6 +1017,7 @@ pub fn version_table(table: &'static Table, version: &str) -> &'static Table {
         return table;
     }
     match table.name {
+        "identity" => &IDENTITY_1_1,
         "fat-step" => &FAT_1_1,
         "mediafile" => &MEDIAFILE_1_1,
         "firmwarefile" => &FIRMWAREFILE_1_1,

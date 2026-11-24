@@ -52,6 +52,7 @@ macro_rules! fixture {
 }
 
 fixture! {
+    machine_template_draft_checks_clean: "machine.machine.toml",
     rule_1_a_file_that_is_not_toml: "rule01-not-toml.media.toml",
     rule_1_unknown_and_missing_keys: "rule01-keys.media.toml",
     rule_1_toml_1_1_forms: "rule01-toml-1.1.media.toml",
@@ -755,4 +756,606 @@ fn fitted_catalogue_supplies_rom_sizes_hashes_and_licences() {
             .count(),
         4
     );
+}
+
+const MACHINE: &str = include_str!("recipe-fixtures/machine.machine.toml");
+
+#[test]
+fn machine_template_has_one_required_config_without_reading_inputs() {
+    let report = generated("valid.machine.toml", MACHINE);
+    assert!(report.is_clean(), "{}", report.render());
+    assert_eq!(report.files[0].split.as_ref().unwrap().required, ["config"]);
+}
+
+#[test]
+fn machine_template_rejects_invalid_declarations_at_their_keys() {
+    let cases = [
+        (
+            "missing-name",
+            "name = \"unemu/machines/ibm-pc/open-at\"",
+            "",
+            "machine",
+        ),
+        ("missing-platform", "platform = \"ibm-pc\"", "", "machine"),
+        ("missing-version", "version = \"1.3.0\"", "", "machine"),
+        (
+            "version-alias",
+            "version = \"1.3.0\"",
+            "version = \"latest\"",
+            "machine.version",
+        ),
+        (
+            "version-leading-zero",
+            "version = \"1.3.0\"",
+            "version = \"01.3.0\"",
+            "machine.version",
+        ),
+        (
+            "revision",
+            "[machine]",
+            "[machine]\nrevision = 1",
+            "machine.revision",
+        ),
+        (
+            "release",
+            "[machine]",
+            "[machine]\nrelease = \"1.3\"",
+            "machine.release",
+        ),
+        ("missing-template", "[template]", "[other]", ""),
+        ("missing-config", "config = \"config\"", "", "template"),
+        (
+            "unknown-config",
+            "config = \"config\"",
+            "config = \"missing\"",
+            "template.config",
+        ),
+        (
+            "member-config",
+            "config = \"config\"",
+            "config = \"config/member\"",
+            "template.config",
+        ),
+        (
+            "set-config",
+            "name = \"open-at.toml\"",
+            "files = []\nname = \"open-at.toml\"",
+            "template.config",
+        ),
+        (
+            "zero-disk",
+            "size = 528482304",
+            "size = 0",
+            "template.disks[1].size",
+        ),
+        (
+            "negative-disk",
+            "size = 528482304",
+            "size = -1",
+            "template.disks[1].size",
+        ),
+        (
+            "disk-units",
+            "size = 528482304",
+            "size = \"504MiB\"",
+            "template.disks[1].size",
+        ),
+        (
+            "fractional-disk",
+            "size = 528482304",
+            "size = 528482304.0",
+            "template.disks[1].size",
+        ),
+        (
+            "empty-disk",
+            "id = \"system\"",
+            "id = \"\"",
+            "template.disks[1].id",
+        ),
+        (
+            "duplicate-disk",
+            "disks = [{ id = \"system\", size = 528482304 }]",
+            "disks = [{ id = \"system\", size = 1 }, { id = \"system\", size = 2 }]",
+            "template.disks[2].id",
+        ),
+        (
+            "missing-use-image",
+            "image = \"unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1\"",
+            "",
+            "use.bios",
+        ),
+        (
+            "missing-use-digest",
+            "digest = \"sha256:c4c53a6a5c0727d8cccb26b22a92dcbf68e906aed7d9424be80763ea30533ff2\"",
+            "",
+            "use.bios",
+        ),
+        (
+            "extra-use-key",
+            "[use.bios]",
+            "[use.bios]\nextra = true",
+            "use.bios.extra",
+        ),
+        ("mutable-firmware", ":r1\"", ":1.4\"", "use.bios.image"),
+        ("latest-use", ":r1\"", ":latest\"", "use.bios.image"),
+        (
+            "machine-use",
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            "unemu/machines/ibm-pc/open-at:1.3.0",
+            "use.bios.image",
+        ),
+        (
+            "media-without-release",
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            "unemu/media/ibm-pc/freedos:r1",
+            "use.bios.image",
+        ),
+        (
+            "media-alias",
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            "unemu/media/ibm-pc/freedos:1.4",
+            "use.bios.image",
+        ),
+        (
+            "reserved-media",
+            "unemu/machines/ibm-pc/open-at",
+            "unemu/media/machines/ibm-pc/open-at",
+            "machine.name",
+        ),
+        (
+            "reserved-firmware",
+            "unemu/machines/ibm-pc/open-at",
+            "unemu/firmware/machines/ibm-pc/open-at",
+            "machine.name",
+        ),
+        (
+            "reserved-machines",
+            "unemu/machines/ibm-pc/open-at",
+            "unemu/machines/machines/ibm-pc/open-at",
+            "machine.name",
+        ),
+        (
+            "input-size",
+            "size = 1 #",
+            "size = -1 #",
+            "input.config.size",
+        ),
+        (
+            "input-sha",
+            "sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+            "sha256 = \"bad\"",
+            "input.config.sha256",
+        ),
+        (
+            "disk-missing-size",
+            "id = \"system\", size = 528482304",
+            "id = \"system\"",
+            "template.disks[1]",
+        ),
+        (
+            "disk-extra-key",
+            "id = \"system\", size = 528482304",
+            "id = \"system\", size = 1, extra = true",
+            "template.disks[1].extra",
+        ),
+        (
+            "missing-input-size",
+            "size = 1 # Placeholder; use the exact emitted byte length.",
+            "",
+            "input.config",
+        ),
+        (
+            "use-digest",
+            "digest = \"sha256:c4c53a6a5c0727d8cccb26b22a92dcbf68e906aed7d9424be80763ea30533ff2\"",
+            "digest = \"bad\"",
+            "use.bios.digest",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (id, from, to, path) in cases {
+        assert!(MACHINE.contains(from), "{id}: missing replacement");
+        let text = MACHINE.replacen(from, to, 1);
+        let report = generated(&format!("invalid-{id}.machine.toml"), &text);
+        if !report.findings.iter().any(|f| {
+            f.path == path
+                && f.line > 0
+                && f.column > 0
+                && (!id.contains("missing") || f.message.contains("missing key"))
+        }) {
+            failures.push(format!(
+                "{id}: expected positioned {path}: {}",
+                report.render()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn machine_template_forbids_other_recipe_tables() {
+    for (id, declaration, path) in [
+        ("steps", "[[step]]\nid = \"x\"\ntext = \"x\"", "step"),
+        ("media", "[[medium]]\nid = \"disk\"", "medium"),
+        ("extras", "[[extra]]\nid = \"notes\"", "extra"),
+        (
+            "attachments",
+            "[[attachment]]\nid = \"notes\"",
+            "attachment",
+        ),
+        ("title", "[title]\ntitle = \"Other\"", "title"),
+        ("package", "[package]\ntitle = \"Other\"", "package"),
+        ("needs", "[needs]\nram = \"1m\"", "needs"),
+        ("rom", "[[rom]]\nid = \"bios\"", "rom"),
+        ("identity", "[media]\nrevision = 1", "media"),
+        ("firmware-identity", "[firmware]\nrevision = 1", "firmware"),
+        ("work-table", "[work]\nid = \"shared\"", "work"),
+    ] {
+        let report = generated(
+            &format!("forbidden-{id}.machine.toml"),
+            &format!("{MACHINE}\n{declaration}\n"),
+        );
+        assert!(
+            report.findings.iter().any(|f| f.path == path && f.line > 1),
+            "{id}: {}",
+            report.render()
+        );
+    }
+    let report = generated(
+        "forbidden-work.machine.toml",
+        &format!("work = \"shared\"\n{MACHINE}"),
+    );
+    assert!(
+        report.findings.iter().any(|f| f.path == "work"),
+        "{}",
+        report.render()
+    );
+}
+
+#[test]
+fn machine_template_accepts_semver_and_immutable_uses() {
+    for (id, from, to) in [
+        (
+            "pre",
+            "version = \"1.3.0\"",
+            "version = \"1.3.0-rc.1+build.2\"",
+        ),
+        ("firmware-release", ":r1\"", ":1.0-r2\""),
+        (
+            "media",
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            "unemu/media/ibm-pc/freedos:1.4-r1",
+        ),
+    ] {
+        let report = generated(
+            &format!("accepted-{id}.machine.toml"),
+            &MACHINE.replacen(from, to, 1),
+        );
+        assert!(report.is_clean(), "{id}: {}", report.render());
+    }
+}
+
+#[test]
+fn machine_template_one_zero_keeps_the_reserved_kind_diagnostic() {
+    let report = generated(
+        "old.machine.toml",
+        &MACHINE.replace("recipe = \"1.1\"", "recipe = \"1.0\""),
+    );
+    assert_eq!(report.findings.len(), 1, "{}", report.render());
+    assert_eq!(report.findings[0].path, "machine");
+    assert_eq!(
+        report.findings[0].message,
+        "[machine] is reserved for the Machinefile, which recipe 1.0 does not specify"
+    );
+}
+
+#[test]
+fn machine_schema_is_closed_and_only_in_one_one() {
+    let schema = recipe::schema::schema_version(&[&PcRecipes], "1.1");
+    let machine = &schema["$defs"]["machinefile"];
+    assert_eq!(machine["additionalProperties"], false);
+    assert_eq!(
+        machine["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["recipe", "machine", "template"]
+    );
+    assert_eq!(
+        machine["properties"]["machine"]["$ref"],
+        "#/$defs/machine-identity"
+    );
+    assert_eq!(
+        schema["$defs"]["machine-identity"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["name", "platform", "version"]
+    );
+    assert_eq!(
+        schema["$defs"]["use"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["image", "digest"]
+    );
+    let old = recipe::schema::schema_version(&[&PcRecipes], "1.0");
+    assert!(old["$defs"]["machinefile"].is_null());
+    assert!(old["$defs"]["machine-identity"].is_null());
+}
+
+#[test]
+fn machine_optional_identity_fields_keep_the_existing_lock_requirement() {
+    let text = MACHINE.replace(
+        "[machine]",
+        &format!(
+            "[machine]\nmin_app_version = \"0.0.5\"\ndigest = \"sha256:{}\"",
+            "0".repeat(64)
+        ),
+    );
+    let report = generated("machine-identity-fields.machine.toml", &text);
+    assert_eq!(report.findings.len(), 1, "{}", report.render());
+    assert_eq!(report.findings[0].path, "machine.digest");
+    assert_eq!(report.findings[0].rule, recipe::Rule::Lock);
+}
+
+#[test]
+fn machine_template_has_no_extra_import_kind() {
+    assert_eq!(
+        PcRecipes.extra_kind(recipe::model::Kind::Machine, "notes.txt"),
+        None
+    );
+}
+
+#[test]
+fn machine_config_cannot_name_a_declared_step() {
+    let text = MACHINE.replace("config = \"config\"", "config = \"made\"")
+        + "\n[[step]]\nid = \"made\"\ntext = \"config\"\n";
+    let report = generated("step-config.machine.toml", &text);
+    assert!(
+        report.findings.iter().any(|f| f.path == "template.config"),
+        "{}",
+        report.render()
+    );
+    assert!(
+        report.findings.iter().any(|f| f.path == "step"),
+        "{}",
+        report.render()
+    );
+}
+
+#[test]
+fn machine_publisher_refuses_an_unimplemented_template() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("machine-publisher-store");
+    let store = image_store::Store::open(root).unwrap();
+    let staged = recipe::build::Staged {
+        kind: recipe::model::Kind::Machine,
+        reference: "private/machines/ibm-pc/open-at:1.3.0".into(),
+        media: Vec::new(),
+        roms: Vec::new(),
+        extras: Vec::new(),
+        license: None,
+        title: None,
+        labels: Vec::new(),
+        package: None,
+        min_app_version: None,
+    };
+    let error =
+        recipe::build::Publisher::publish(&pc_image::recipe_build::PcPublisher, &store, &staged)
+            .unwrap_err();
+    assert_eq!(error, "machine recipes are not built yet");
+}
+
+fn named_recipe(kind: &str, name: &str, version: &str) -> String {
+    let identity = if kind == "machine" {
+        "version = \"1.3.0\""
+    } else {
+        "revision = 1"
+    };
+    let output = match kind {
+        "media" => format!("[title]\ntitle = \"Names\"\n{}{}", input("bytes"), medium("disk", "bytes")),
+        "firmware" => format!("[package]\ntitle = \"Names\"\n{}\n[[rom]]\nid = \"bios\"\nrole = \"system-bios\"\nfrom = \"bytes\"\n", input("bytes").replace("1474560", "65536")),
+        "machine" => format!("[template]\nconfig = \"bytes\"\n{}", input("bytes")),
+        _ => panic!("unknown recipe kind"),
+    };
+    format!("recipe = \"{version}\"\n[{kind}]\nname = \"{name}\"\nplatform = \"ibm-pc\"\n{identity}\n{output}")
+}
+
+#[test]
+fn names_one_one_accepts_all_kinds_with_whole_namespaces() {
+    let mut failures = Vec::new();
+    for (kind, segment) in [
+        ("media", "media"),
+        ("firmware", "firmware"),
+        ("machine", "machines"),
+    ] {
+        for (n, namespace) in [
+            "private",
+            "private/experimental",
+            "private/experimental/review",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let report = generated(
+                &format!("names-{kind}-{n}.toml"),
+                &named_recipe(kind, &format!("{namespace}/{segment}/ibm-pc/names"), "1.1"),
+            );
+            if !report.is_clean() {
+                failures.push(report.render());
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn names_one_one_refuses_reserved_namespaces_kind_and_platform_at_the_name() {
+    for (kind, segment, wrong) in [
+        ("media", "media", "firmware"),
+        ("firmware", "firmware", "machines"),
+        ("machine", "machines", "media"),
+    ] {
+        let mut names = vec![
+            format!("private/nested/{wrong}/ibm-pc/names"),
+            format!("private/nested/{segment}/nes/names"),
+        ];
+        for reserved in ["media", "firmware", "machines", "recipes"] {
+            names.push(format!("{reserved}/{segment}/ibm-pc/names"));
+            names.push(format!("{reserved}/experimental/{segment}/ibm-pc/names"));
+            names.push(format!("private/{reserved}/{segment}/ibm-pc/names"));
+        }
+        for (n, name) in names.iter().enumerate() {
+            let report = generated(
+                &format!("bad-names-{kind}-{n}.toml"),
+                &named_recipe(kind, name, "1.1"),
+            );
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.path == format!("{kind}.name")
+                        && f.line > 1
+                        && f.column > 0
+                        && (n >= 2 || f.rule == recipe::Rule::Kind)),
+                "{name}: {}",
+                report.render()
+            );
+        }
+    }
+}
+
+#[test]
+fn names_one_one_uses_accept_nested_namespaces_with_immutable_tags() {
+    let mut failures = Vec::new();
+    for image in [
+        "private/experimental/firmware/ibm-pc/bios:r1",
+        "private/experimental/review/media/ibm-pc/dos:1.4-r2",
+    ] {
+        let text = MACHINE.replacen(
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            image,
+            1,
+        );
+        let report = generated(&format!("names-use-{}.toml", failures.len()), &text);
+        if !report.is_clean() {
+            failures.push(report.render());
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn names_one_zero_keeps_the_five_segment_refusal_and_namespace_rules() {
+    let report = generated(
+        "names-old.toml",
+        &named_recipe("media", "private/experimental/media/ibm-pc/names", "1.0"),
+    );
+    assert_eq!(report.findings.len(), 1, "{}", report.render());
+    assert_eq!(report.findings[0].path, "media.name");
+    assert_eq!(report.findings[0].message, "\"private/experimental/media/ibm-pc/names\": expected a repository of four components in the OCI grammar, such as unemu/media/ibm-pc/freedos");
+    for reserved in ["media", "firmware", "machines", "recipes"] {
+        let report = generated(
+            &format!("names-old-{reserved}.toml"),
+            &named_recipe(
+                "media",
+                &[reserved, "media", "ibm-pc", "names"].join("/"),
+                "1.0",
+            ),
+        );
+        assert!(report.is_clean(), "{}", report.render());
+    }
+}
+
+#[test]
+fn names_one_one_keeps_reserved_words_available_as_template_ids_and_limits_bytes() {
+    for id in ["media", "firmware", "machines", "recipes"] {
+        let text = named_recipe("machine", &format!("private/machines/ibm-pc/{id}"), "1.1");
+        let report = generated(&format!("names-id-{id}.toml"), &text);
+        assert!(report.is_clean(), "{}", report.render());
+    }
+    for (n, length) in [255, 256].into_iter().enumerate() {
+        let prefix = "private/nested/machines/ibm-pc/";
+        let name = format!("{prefix}{}", "a".repeat(length - prefix.len()));
+        let report = generated(
+            &format!("names-size-{n}.toml"),
+            &named_recipe("machine", &name, "1.1"),
+        );
+        assert_eq!(report.is_clean(), length == 255, "{}", report.render());
+        if length == 256 {
+            assert_eq!(report.findings[0].path, "machine.name");
+        }
+    }
+}
+
+#[test]
+fn names_one_zero_recipe_mapping_is_unchanged_for_every_existing_recipe() {
+    let paths = [CORPUS, TEMPLATE_RECIPES, FIXTURES].map(PathBuf::from);
+    let mut count = 0;
+    for path in recipe::files(&paths).unwrap() {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let Ok(table) = text.parse::<toml::Table>() else {
+            continue;
+        };
+        if table.get("recipe").and_then(toml::Value::as_str) != Some("1.0") {
+            continue;
+        }
+        for kind in ["media", "firmware"] {
+            let Some(identity) = table.get(kind).and_then(toml::Value::as_table) else {
+                continue;
+            };
+            let Some(name) = identity.get("name").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let revision = identity
+                .get("revision")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or(0);
+            let tag = match identity.get("release").and_then(toml::Value::as_str) {
+                Some(release) => format!("{release}-r{revision}"),
+                None => format!("r{revision}"),
+            };
+            let (namespace, rest) = name.split_once('/').unwrap_or(("", name));
+            assert_eq!(
+                recipe::artifact::recipe_name(&format!("{name}:{tag}"), "1.0"),
+                format!("{namespace}/recipes/{rest}:{tag}"),
+                "{}",
+                path.display()
+            );
+            count += 1;
+        }
+    }
+    eprintln!("checked {count} existing 1.0 recipe identity mappings");
+    assert!(count > 30, "only {count} recipe identities checked");
+}
+
+#[test]
+fn names_one_one_uses_keep_namespace_and_tag_restrictions() {
+    for image in [
+        "private/media/firmware/ibm-pc/bios:r1",
+        "private/experimental/firmware/ibm-pc/bios:latest",
+        "private/experimental/media/ibm-pc/dos:1.4",
+        "private/experimental/media/ibm-pc/dos:r1",
+        "private/experimental/machines/ibm-pc/open-at:1.3.0",
+    ] {
+        let text = MACHINE.replacen(
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            image,
+            1,
+        );
+        let report = generated("names-bad-use.toml", &text);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.path == "use.bios.image" && f.line > 1 && f.column > 0),
+            "{image}: {}",
+            report.render()
+        );
+    }
 }

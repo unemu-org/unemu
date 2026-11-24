@@ -350,6 +350,7 @@ pub fn payloads(
             .unwrap_or_default()
     };
     match recipe.kind {
+        Kind::Machine => return out,
         Kind::Media => {
             let Ok(config) = media_set::Config::decode(&locked.config) else {
                 return out;
@@ -561,6 +562,7 @@ pub fn compare(
     let artifact_type = match recipe.kind {
         Kind::Media => media_type::MEDIA_SET,
         Kind::Firmware => media_type::FIRMWARE,
+        Kind::Machine => media_type::MACHINE,
     };
     c.same(
         "artifact type",
@@ -602,6 +604,11 @@ pub fn compare(
                 String::new(),
             ),
         },
+        Kind::Machine => c.error(
+            "machine recipe",
+            "machine recipes are not built yet".into(),
+            String::new(),
+        ),
         Kind::Firmware => match firmware::Config::decode(&locked.config) {
             Ok(config) => {
                 package(&mut c, recipe, locked, &config, provider);
@@ -1432,6 +1439,7 @@ pub fn verify(
             }
             Err(e) => errors.push(format!("the locked set config: {e}")),
         },
+        Kind::Machine => errors.push("machine recipes are not built yet".into()),
         Kind::Firmware => match firmware::Config::decode(&locked.config) {
             Ok(config) => {
                 if config.roms.len() != built.roms.len() {

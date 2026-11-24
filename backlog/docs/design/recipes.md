@@ -1583,6 +1583,48 @@ checksummed release assets. Plan JSON keeps existing fields and string
 operands; only an array operand has `operand: null` and adds `placements`
 with `from`, `dos_name` and `time`. Reports credit each input once.
 
+Every 1.1 output name has the shape `NAMESPACE/KIND/PLATFORM/ID`, at most
+255 bytes. NAMESPACE contains one or more OCI path segments; read KIND
+(`media`, `firmware` or `machines`) and PLATFORM from the end. They must
+match the identity table and its platform. Namespace segments cannot be
+`media`, `firmware`, `machines` or `recipes`. Version 1.0 retains its
+four-component grammar and diagnostics.
+
+### 6.18. Version 1.1: machine templates
+
+A machine recipe uses `[machine]` with required `name` (`NAMESPACE/machines/PLATFORM/ID`),
+`platform` and SemVer `version`, which is its output tag. Optional `digest`
+pins its manifest; `min_app_version` keeps its existing meaning. There is
+no `release`, `revision` or work file. Version 1.0 continues to refuse
+`[machine]` with its existing finding.
+
+`[template]` requires `config`, the id of one whole file input, and allows
+`title`, `description`, `labels` and `disks = [{ id = "system", size = 528482304 }]`.
+Disk ids are nonempty and unique; sizes are positive exact byte counts.
+Config cannot name a file set, member or step. File inputs keep their size,
+SHA-256 and own-text bundling rules. `[license]` describes generated content;
+it does not grant rights to imported packages.
+
+Each `[use.ID]` contains exactly `image` and its manifest `digest`. Only
+firmware (`NAMESPACE/firmware/PLATFORM/ID:[RELEASE-]rN`) and media
+(`NAMESPACE/media/PLATFORM/ID:RELEASE-rN`) are permitted. Aliases such as
+`freedos:1.4` or `latest` are refused even with a digest. Machine uses,
+steps, media and extra outputs, attachments, `[title]`, `[package]`,
+`[needs]` and multiple identities are refused.
+
+The recipe name inserts `recipes/` after the whole namespace:
+`unemu/experimental/machines/ibm-pc/open-at:1.3.0` maps to
+`unemu/experimental/recipes/machines/ibm-pc/open-at:1.3.0`. Media and firmware
+use the same mapping. Pinned `[use.ID]` images also allow nested namespaces.
+For one namespace segment the mapping matches 1.0 exactly. A publisher may
+choose another namespace under the existing publication rules; it too is
+kept whole before `recipes/`.
+
+Static `recipe check` validates this structure without opening inputs,
+contacting a registry or calling a core. Config bindings and package
+closure require resolved checks. Machine `recipe plan` and `recipe build`
+currently refuse with `machine recipes are not built yet`.
+
 ## 7. Recipes as registry artifacts
 
 ### 7.1. The artifact

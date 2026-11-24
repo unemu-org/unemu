@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The typed model of recipe versions 1.0 and 1.1 (recipes §6): a Mediafile or a
-//! Firmwarefile, and the work file of recipes §6.16.
+//! The typed model of recipe versions 1.0 and 1.1: media, firmware and
+//! machine recipes, and shared media work files.
 //!
 //! Every value keeps where it was written ([`At`]), so a later check reports
 //! its file position and key path. A value the parser refused is absent
@@ -38,20 +38,22 @@ pub enum Kind {
     Media,
     /// `[firmware]`: a firmware package.
     Firmware,
+    /// `[machine]`: a machine template.
+    Machine,
 }
 
 impl Kind {
-    /// The identity table's key, which is also the kind segment of the
-    /// output's repository (`unemu/media/…`).
+    /// The identity table's key.
     pub fn key(self) -> &'static str {
         match self {
             Self::Media => "media",
             Self::Firmware => "firmware",
+            Self::Machine => "machine",
         }
     }
 }
 
-/// A Mediafile or a Firmwarefile.
+/// A media, firmware or machine recipe.
 #[derive(Clone, Debug)]
 pub struct Recipe {
     pub kind: Kind,
@@ -61,6 +63,8 @@ pub struct Recipe {
     /// `<work>.work.toml` beside the recipe.
     pub work: Option<At<String>>,
     pub identity: Identity,
+    pub template: Option<Template>,
+    pub uses: Vec<Use>,
     pub title: Option<Title>,
     pub package: Option<Package>,
     pub license: Option<License>,
@@ -74,7 +78,7 @@ pub struct Recipe {
     pub attachments: Vec<Attachment>,
 }
 
-/// `[media]` or `[firmware]` (recipes §6.3).
+/// The output identity, including a machine template’s SemVer tag.
 #[derive(Clone, Debug)]
 pub struct Identity {
     /// The table header.
@@ -82,9 +86,35 @@ pub struct Identity {
     pub name: Option<At<String>>,
     pub platform: Option<At<String>>,
     pub release: Option<At<String>>,
+    pub version: Option<At<String>>,
     pub revision: Option<At<i64>>,
     pub digest: Option<At<String>>,
     pub min_app_version: Option<At<String>>,
+}
+
+/// The machine template's description and declared blank disks.
+#[derive(Clone, Debug)]
+pub struct Template {
+    pub config: Option<At<String>>,
+    pub disks: Vec<TemplateDisk>,
+    pub title: Option<At<String>>,
+    pub description: Option<At<String>>,
+    pub labels: Vec<At<String>>,
+}
+
+/// A document-owned zero disk, sized in exact bytes.
+#[derive(Clone, Debug)]
+pub struct TemplateDisk {
+    pub id: Option<At<String>>,
+    pub size: Option<At<u64>>,
+}
+
+/// A firmware or media package pinned by manifest digest.
+#[derive(Clone, Debug)]
+pub struct Use {
+    pub id: At<String>,
+    pub image: Option<At<String>>,
+    pub digest: Option<At<String>>,
 }
 
 /// The players a title takes.

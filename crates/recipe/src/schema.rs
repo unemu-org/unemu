@@ -45,16 +45,28 @@ pub fn schema_version(providers: &[&dyn Provider], version: &str) -> Value {
     for form in TEXTS {
         defs.insert(text_name(*form).to_owned(), text_schema(*form));
     }
+    if version == "1.1" {
+        for form in [Text::Repository11, Text::SemVer, Text::UseImage] {
+            defs.insert(text_name(form).to_owned(), text_schema(form));
+        }
+    }
     defs.insert("local-time".into(), local_time());
     let mut writer = Writer {
         defs,
         version: version.to_owned(),
     };
-    let roots: [(&str, &str, &'static Table); 2] = [
+    let mut roots: Vec<(&str, &str, &'static Table)> = vec![
         ("mediafile", "media", &spec::MEDIAFILE),
         ("firmwarefile", "firmware", &spec::FIRMWAREFILE),
     ];
+    if version == "1.1" {
+        roots.push(("machinefile", "machine", &spec::MACHINEFILE));
+    }
     for (name, identity, table) in roots {
+        if !has_vocab(table) {
+            writer.table(table, None);
+            continue;
+        }
         let mut dispatch = json!({ "$ref": format!("#/$defs/{}", writer.table(table, None)) });
         for provider in providers.iter().rev() {
             let then = writer.table(table, Some(*provider));
@@ -70,7 +82,7 @@ pub fn schema_version(providers: &[&dyn Provider], version: &str) -> Value {
         writer.defs.insert(name.into(), dispatch);
     }
     let work = writer.table(&spec::WORK_FILE, None);
-    json!({
+    let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": format!("unemupc recipe {version}: Mediafile, Firmwarefile or work file"),
         "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by unemu recipe check.",
@@ -83,7 +95,18 @@ pub fn schema_version(providers: &[&dyn Provider], version: &str) -> Value {
             "else": { "$ref": "#/$defs/mediafile" }
         },
         "$defs": Value::Object(writer.defs),
-    })
+    });
+    if version == "1.1" {
+        schema["title"] =
+            json!("unemupc recipe 1.1: Mediafile, Firmwarefile, Machinefile or work file");
+        let other = schema["else"].take();
+        schema["else"] = json!({
+            "if": { "required": ["machine"] },
+            "then": { "$ref": "#/$defs/machinefile" },
+            "else": other,
+        });
+    }
+    schema
 }
 
 struct Writer {
@@ -322,6 +345,9 @@ fn text_name(form: Text) -> &'static str {
         Text::Crc32 => "crc32",
         Text::Digest => "digest",
         Text::Repository => "repository",
+        Text::Repository11 => "repository-1.1",
+        Text::SemVer => "semver",
+        Text::UseImage => "use-image",
         Text::Platform => "platform",
         Text::Release => "release",
         Text::Version => "version",
@@ -343,6 +369,13 @@ const SEGMENT: &str = "[^/\\\\\\u0000-\\u001f\\u007f]+";
 const DOT_PART: &str = "(^|/)\\.\\.?(/|$)";
 const COMPONENT: &str = "[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*";
 
+fn namespace_pattern() -> String {
+    format!(
+        "(?!(?:{})(?:/|$)){COMPONENT}",
+        spec::RESERVED_NAMESPACE_SEGMENTS.join("|")
+    )
+}
+
 fn text_schema(form: Text) -> Value {
     let description = form.expected().trim_start_matches("expected ");
     let mut schema = match form {
@@ -360,6 +393,22 @@ fn text_schema(form: Text) -> Value {
         Text::Md5 => hex(32),
         Text::Crc32 => hex(8),
         Text::Digest => json!({ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }),
+        Text::Repository11 => json!({
+            "type": "string", "maxLength": 255,
+            "pattern": format!("^{0}(/{0})*/(media|firmware|machines)/{COMPONENT}/{COMPONENT}$", namespace_pattern())
+        }),
+        Text::SemVer => json!({
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+        }),
+        Text::UseImage => {
+            let release = "[a-z0-9]+([._][a-z0-9]+)*(-[a-z0-9]+([._][a-z0-9]+)*)*";
+            json!({
+                "type": "string", "maxLength": 384,
+                "pattern": format!("^{0}(/{0})*/(firmware/{COMPONENT}/{COMPONENT}:({release}-)?r[1-9][0-9]*|media/{COMPONENT}/{COMPONENT}:{release}-r[1-9][0-9]*)$", namespace_pattern()),
+                "not": { "pattern": ":([^:]*-)?r[0-9]+-" }
+            })
+        }
         Text::Repository => json!({
             "type": "string",
             "maxLength": 255,

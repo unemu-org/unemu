@@ -1062,3 +1062,106 @@ fn placements_bundle_inputs_are_listed_once_and_rebuild_their_lock() {
         assert_eq!(fs::read(lock.join("sha256").join(name)).unwrap(), bytes);
     }
 }
+
+#[test]
+fn machine_check_is_structural_and_plan_and_build_are_not_built_yet() {
+    let t = Temp::new("machine-static");
+    let text = format!(
+        "recipe = \"1.1\"\n[machine]\nname = \"unemu/machines/ibm-pc/open-at\"\nplatform = \"ibm-pc\"\nversion = \"1.3.0\"\n\n\
+         [template]\nconfig = \"config\"\n\n\
+         [license]\nexpression = \"CC0-1.0\"\n\n\
+         [input.config]\nname = \"open-at.toml\"\nsize = 1\nsha256 = \"{}\"\nbundle = true\n",
+        "0".repeat(64)
+    );
+    let path = t.path("open-at.machine.toml");
+    fs::write(&path, text).unwrap();
+    let file = path.to_str().unwrap();
+    let (code, output, errors) = upcli(&["recipe".into(), "check".into(), file.into()]);
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(
+        output.contains("machine recipe; required inputs: config"),
+        "{output}"
+    );
+    image_store::Store::open(t.path("store")).unwrap();
+    let _store = image_store::Store::open(t.path("store")).unwrap();
+    for verb in ["plan", "build"] {
+        let (code, output, errors) = upcli(&[
+            "recipe".into(),
+            verb.into(),
+            file.into(),
+            "--store".into(),
+            t.path("store").into_os_string(),
+        ]);
+        assert_ne!(code, 0, "{output}{errors}");
+        assert!(
+            format!("{output}{errors}").contains("machine recipes are not built yet"),
+            "{verb}: {output}{errors}"
+        );
+    }
+}
+
+#[test]
+fn names_guard_publishes_after_the_whole_namespace_without_network() {
+    for version in ["1.0", "1.1"] {
+        let t = Temp::new(&format!("names-guard-{version}"));
+        let path = recipe(&t, &[b'n'; 300], &data());
+        let mut text = fs::read_to_string(&path).unwrap();
+        if version == "1.1" {
+            text = text
+                .replace("recipe = \"1.0\"", "recipe = \"1.1\"")
+                .replace(
+                    "private/media/ibm-pc/fetched",
+                    "private/experimental/media/ibm-pc/fetched",
+                );
+        }
+        fs::write(&path, text).unwrap();
+        let lib = t.path("lib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("README.TXT"), [b'n'; 300]).unwrap();
+        fs::write(lib.join("DATA.BIN"), data()).unwrap();
+        let mut args = words(&t, &path, &["--library", lib.to_str().unwrap()]);
+        args[1] = "pin".into();
+        let (code, output, errors) = upcli(&args);
+        assert_eq!(code, 0, "{output}{errors}");
+        let next = recipe::compat::NEXT_RELEASE;
+        let levels = image_store::compat::Levels::new(Some((next, next)), next, next);
+        let artifact =
+            recipe::artifact::bundle_with_levels(&path, recipe::Providers(&PROVIDERS), levels)
+                .unwrap();
+        let namespaces = if version == "1.1" {
+            ["private/experimental", "unemu/team/review"]
+        } else {
+            ["private", "unemu"]
+        };
+        for namespace in namespaces {
+            let target = format!("{namespace}/recipes/media/ibm-pc/fetched");
+            recipe::artifact::guard(
+                &artifact,
+                recipe::Providers(&PROVIDERS),
+                &target,
+                "r1",
+                &t.path("scratch"),
+            )
+            .unwrap();
+        }
+        for wrong in [
+            "private/recipes/experimental/media/ibm-pc/fetched",
+            "private/recipes/media/ibm-pc/other",
+            "private/media/recipes/media/ibm-pc/fetched",
+        ] {
+            assert!(
+                matches!(
+                    recipe::artifact::guard(
+                        &artifact,
+                        recipe::Providers(&PROVIDERS),
+                        wrong,
+                        "r1",
+                        &t.path("bad-scratch")
+                    ),
+                    Err(recipe::artifact::Refusal::Name { .. })
+                ),
+                "{wrong}"
+            );
+        }
+    }
+}

@@ -39,6 +39,7 @@ impl Publisher for PcPublisher {
         match artifact.kind {
             Kind::Media => media(store, artifact),
             Kind::Firmware => firmware(store, artifact),
+            Kind::Machine => Err("machine recipes are not built yet".into()),
         }
     }
 

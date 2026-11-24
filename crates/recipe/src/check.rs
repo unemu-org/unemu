@@ -359,6 +359,7 @@ pub(crate) fn bundled_work(recipe: &Recipe, sink: &mut Sink<'_>, work_sha256: &s
 fn kind(recipe: &Recipe, sink: &mut Sink<'_>, work: &Work<'_, '_>) {
     let at = &recipe.identity.at;
     match recipe.kind {
+        Kind::Machine => machine(recipe, sink),
         Kind::Media => {
             if recipe.media.is_empty() {
                 sink.report(
@@ -411,7 +412,24 @@ fn kind(recipe: &Recipe, sink: &mut Sink<'_>, work: &Work<'_, '_>) {
     }
     if let Some(name) = &recipe.identity.name {
         let parts: Vec<&str> = name.value.split('/').collect();
-        if parts.len() == 4 {
+        if recipe.version.as_ref().is_some_and(|v| v.value == "1.1") && parts.len() >= 4 {
+            let kind = parts[parts.len() - 3];
+            let wanted = match recipe.kind {
+                Kind::Machine => "machines",
+                _ => recipe.kind.key(),
+            };
+            if kind != wanted {
+                sink.report(Rule::Kind, &name.span, &name.path,
+                    format!("the third component from the end is `{kind}`; the output of [{}] is named NAMESPACE/{wanted}/PLATFORM/ID", recipe.kind.key()));
+            }
+            if let Some(platform) = &recipe.identity.platform {
+                let found = parts[parts.len() - 2];
+                if found != platform.value {
+                    sink.report(Rule::Kind, &name.span, &name.path,
+                        format!("the second component from the end is `{found}`; it is the platform, `{}`", platform.value));
+                }
+            }
+        } else if parts.len() == 4 {
             if parts[1] != recipe.kind.key() {
                 sink.report(
                     Rule::Kind,
@@ -461,6 +479,35 @@ fn kind(recipe: &Recipe, sink: &mut Sink<'_>, work: &Work<'_, '_>) {
             for member in members {
                 disclosable(sink, member.disclosable.as_ref(), member.size.as_ref());
             }
+        }
+    }
+}
+
+fn machine(recipe: &Recipe, sink: &mut Sink<'_>) {
+    let Some(template) = &recipe.template else {
+        return;
+    };
+    if let Some(config) = &template.config {
+        if !recipe.inputs.iter().any(|input| {
+            input.id.value == config.value && matches!(input.form, InputForm::File { .. })
+        }) {
+            sink.report(
+                Rule::Reference,
+                &config.span,
+                &config.path,
+                "template config must name exactly one file input, not a step, file set or member",
+            );
+        }
+    }
+    let mut ids = BTreeSet::new();
+    for id in template.disks.iter().filter_map(|disk| disk.id.as_ref()) {
+        if !ids.insert(&id.value) {
+            sink.report(
+                Rule::Reference,
+                &id.span,
+                &id.path,
+                format!("the disk id `{}` is declared twice", id.value),
+            );
         }
     }
 }
@@ -565,6 +612,9 @@ fn names(recipe: &Recipe, sink: &mut Sink<'_>) -> Names {
 /// Rule 3: every reference, in order, and the output ids; returns the split
 /// of rule 5.
 fn references(recipe: &Recipe, sink: &mut Sink<'_>, names: &mut Names) -> Split {
+    if let Some(config) = recipe.template.as_ref().and_then(|t| t.config.as_ref()) {
+        names.used.insert(config.value.clone());
+    }
     for (index, step) in recipe.steps.iter().enumerate() {
         let value = match &step.op {
             Op::Unpack {
@@ -758,6 +808,9 @@ fn dos_names(sink: &mut Sink<'_>, extras: &[Extra]) {
 /// The value names the artifact's own outputs reference.
 fn own_roots(recipe: &Recipe) -> Vec<String> {
     let mut roots = Vec::new();
+    if let Some(config) = recipe.template.as_ref().and_then(|t| t.config.as_ref()) {
+        roots.push(config.value.clone());
+    }
     let mut add = |r: &Option<At<String>>| {
         if let Some(r) = r {
             roots.push(base(&r.value).to_owned());
@@ -910,6 +963,7 @@ fn license(
                 },
             );
     match recipe.kind {
+        Kind::Machine => {}
         Kind::Media => {
             if license.terms.is_none() {
                 sink.report(

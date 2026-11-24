@@ -144,6 +144,7 @@ impl MediaProfile for PcRecipes {
         let kind = match artifact {
             recipe::model::Kind::Media => crate::media_import::extra_kind(path),
             recipe::model::Kind::Firmware => crate::firmware_import::extra_kind(path),
+            recipe::model::Kind::Machine => return None,
         };
         use image_store::media_set::ExtraKind;
         Some(

@@ -561,6 +561,7 @@ fn show(
         Ok(recipe::Showing::Shown(recipe::Shown::NotMedia(what))) => {
             let what = match what {
                 recipe::What::Firmware => "a firmware recipe",
+                recipe::What::Machine => "a machine recipe",
                 recipe::What::Work => "a work file",
                 recipe::What::Media => "a media recipe without a title record",
             };

@@ -716,7 +716,7 @@
           "$ref": "#/$defs/version"
         },
         "name": {
-          "$ref": "#/$defs/repository"
+          "$ref": "#/$defs/repository-1.1"
         },
         "platform": {
           "$ref": "#/$defs/platform"
@@ -769,6 +769,84 @@
       "description": "a local date-time with even seconds, years 1980 to 2107 (FAT and zip); TOML writes it unquoted, the JSON mapping makes it a string",
       "pattern": "^(198[0-9]|199[0-9]|20[0-9][0-9]|210[0-7])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][02468]$",
       "type": "string"
+    },
+    "machine-identity": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "min_app_version": {
+          "$ref": "#/$defs/version"
+        },
+        "name": {
+          "$ref": "#/$defs/repository-1.1"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "required": [
+        "name",
+        "platform",
+        "version"
+      ],
+      "type": "object"
+    },
+    "machinefile": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/file-set-input"
+              },
+              {
+                "$ref": "#/$defs/file-input"
+              }
+            ]
+          },
+          "maxProperties": 4096,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "object"
+        },
+        "license": {
+          "$ref": "#/$defs/license"
+        },
+        "machine": {
+          "$ref": "#/$defs/machine-identity"
+        },
+        "recipe": {
+          "enum": [
+            "1.1"
+          ]
+        },
+        "template": {
+          "$ref": "#/$defs/template"
+        },
+        "use": {
+          "additionalProperties": {
+            "$ref": "#/$defs/use"
+          },
+          "maxProperties": 4096,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "recipe",
+        "machine",
+        "template"
+      ],
+      "type": "object"
     },
     "md5": {
       "description": "32 lower-case hexadecimal digits",
@@ -1468,6 +1546,12 @@
       "pattern": "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*){3}$",
       "type": "string"
     },
+    "repository-1.1": {
+      "description": "NAMESPACE/KIND/PLATFORM/ID in the OCI grammar, at most 255 characters; KIND is media, firmware or machines; namespace segments cannot be media, firmware, machines or recipes",
+      "maxLength": 255,
+      "pattern": "^(?!(?:media|firmware|machines|recipes)(?:/|$))[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(/(?!(?:media|firmware|machines|recipes)(?:/|$))[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*/(media|firmware|machines)/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*$",
+      "type": "string"
+    },
     "rom-file.any": {
       "additionalProperties": false,
       "properties": {
@@ -1600,6 +1684,11 @@
       ],
       "type": "object"
     },
+    "semver": {
+      "description": "a Semantic Versioning 2.0.0 version",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$",
+      "type": "string"
+    },
     "sha1": {
       "description": "40 lower-case hexadecimal digits",
       "pattern": "^[0-9a-f]{40}$",
@@ -1614,6 +1703,53 @@
       "description": "an SPDX licence expression",
       "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
       "type": "string"
+    },
+    "template": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "$ref": "#/$defs/text"
+        },
+        "disks": {
+          "items": {
+            "$ref": "#/$defs/template-disk"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "array"
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "type": "object"
+    },
+    "template-disk": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "size": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "size"
+      ],
+      "type": "object"
     },
     "text": {
       "description": "text that is not blank, without control characters other than line breaks",
@@ -1847,6 +1983,31 @@
       "pattern": "^https://[^\\s\\u0000-\\u001f\\u007f]+$",
       "type": "string"
     },
+    "use": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "image": {
+          "$ref": "#/$defs/use-image"
+        }
+      },
+      "required": [
+        "image",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "use-image": {
+      "description": "an immutable firmware image NAMESPACE/firmware/PLATFORM/ID:[RELEASE-]rN or media image NAMESPACE/media/PLATFORM/ID:RELEASE-rN; machine uses and aliases are not permitted",
+      "maxLength": 384,
+      "not": {
+        "pattern": ":([^:]*-)?r[0-9]+-"
+      },
+      "pattern": "^(?!(?:media|firmware|machines|recipes)(?:/|$))[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(/(?!(?:media|firmware|machines|recipes)(?:/|$))[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*/(firmware/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*:([a-z0-9]+([._][a-z0-9]+)*(-[a-z0-9]+([._][a-z0-9]+)*)*-)?r[1-9][0-9]*|media/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*:[a-z0-9]+([._][a-z0-9]+)*(-[a-z0-9]+([._][a-z0-9]+)*)*-r[1-9][0-9]*)$",
+      "type": "string"
+    },
     "version": {
       "description": "a version X.Y.Z",
       "pattern": "^[0-9]{1,9}\\.[0-9]{1,9}\\.[0-9]{1,9}$",
@@ -1973,15 +2134,25 @@
   "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by unemu recipe check.",
   "else": {
     "else": {
-      "$ref": "#/$defs/mediafile"
+      "else": {
+        "$ref": "#/$defs/mediafile"
+      },
+      "if": {
+        "required": [
+          "firmware"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/firmwarefile"
+      }
     },
     "if": {
       "required": [
-        "firmware"
+        "machine"
       ]
     },
     "then": {
-      "$ref": "#/$defs/firmwarefile"
+      "$ref": "#/$defs/machinefile"
     }
   },
   "if": {
@@ -1997,6 +2168,6 @@
   "then": {
     "$ref": "#/$defs/work-file.any"
   },
-  "title": "unemupc recipe 1.1: Mediafile, Firmwarefile or work file",
+  "title": "unemupc recipe 1.1: Mediafile, Firmwarefile, Machinefile or work file",
   "type": "object"
 }

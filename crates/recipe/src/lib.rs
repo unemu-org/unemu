@@ -90,6 +90,7 @@ use std::path::{Path, PathBuf};
 pub enum What {
     Media,
     Firmware,
+    Machine,
     Work,
 }
 
@@ -140,6 +141,7 @@ impl Report {
             match file.what {
                 Some(What::Media) => out.push_str(", media recipe"),
                 Some(What::Firmware) => out.push_str(", firmware recipe"),
+                Some(What::Machine) => out.push_str(", machine recipe"),
                 Some(What::Work) => out.push_str(", work file"),
                 None => {}
             }
@@ -331,6 +333,7 @@ pub(crate) fn check_held(
                 report.what = Some(match parsed.kind {
                     model::Kind::Media => What::Media,
                     model::Kind::Firmware => What::Firmware,
+                    model::Kind::Machine => What::Machine,
                 });
                 let work = match parsed.work {
                     Some(_) => check::Work::Held,
@@ -486,13 +489,19 @@ pub fn plan_path(
         return Ok(Planned::Refused(report));
     }
     match report.files.first().and_then(|f| f.what) {
-        Some(What::Media | What::Firmware) => {}
+        Some(What::Media | What::Firmware | What::Machine) => {}
         Some(What::Work) => return Ok(Planned::NotRecipe),
         None => return Err(changed(path)),
     }
     let Some(Document::Recipe(recipe)) = document(path)? else {
         return Err(changed(path));
     };
+    if recipe.kind == model::Kind::Machine {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "machine recipes are not built yet",
+        ));
+    }
     // A pinned recipe looks its outputs up by the payloads its lock names;
     // the checks opened the lock already.
     let lost = recipe.identity.digest.is_some() && lock_lost(path);
@@ -546,7 +555,7 @@ pub(crate) fn load(path: &Path, providers: Providers<'_>) -> io::Result<Opened> 
         return Ok(Opened::Refused(report));
     }
     match report.files.first().and_then(|f| f.what) {
-        Some(What::Media | What::Firmware) => {}
+        Some(What::Media | What::Firmware | What::Machine) => {}
         Some(What::Work) => return Ok(Opened::Work),
         None => return Err(changed(path)),
     }
@@ -733,6 +742,7 @@ fn check_file(
             report.what = Some(match recipe.kind {
                 model::Kind::Media => What::Media,
                 model::Kind::Firmware => What::Firmware,
+                model::Kind::Machine => What::Machine,
             });
             let lookup = recipe
                 .work
@@ -821,7 +831,7 @@ fn lock_findings(
 ) -> Vec<lock::Difference> {
     let merged = match recipe.kind {
         model::Kind::Media => merge::merge(recipe, work),
-        model::Kind::Firmware => None,
+        model::Kind::Firmware | model::Kind::Machine => None,
     };
     let provider = recipe
         .identity

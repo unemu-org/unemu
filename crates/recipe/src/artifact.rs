@@ -34,7 +34,7 @@
 //! adds what publishing needs: a bundled input is text; a recipe without
 //! `[license]` names no file under 256 bytes unless the entry says
 //! `disclosable = true`; the repository is the publisher's namespace,
-//! `recipes/` and the output's path after its first component, and the tag
+//! `recipes/` and the output's path after its version's namespace, and the tag
 //! is the output's; the annotations say what the recipe says; the marker is
 //! at least what this release computes. That a tag is replaced only by a
 //! recipe pinning the same output digest is checked against the registry by
@@ -71,6 +71,7 @@ pub fn artifact_type(kind: Kind) -> &'static str {
     match kind {
         Kind::Media => media_type::RECIPE_MEDIA,
         Kind::Firmware => media_type::RECIPE_FIRMWARE,
+        Kind::Machine => "application/vnd.unemu.recipe.machine.v1",
     }
 }
 
@@ -89,6 +90,7 @@ fn suffix(kind: Kind) -> &'static str {
     match kind {
         Kind::Media => ".media.toml",
         Kind::Firmware => ".firmware.toml",
+        Kind::Machine => ".machine.toml",
     }
 }
 
@@ -593,6 +595,7 @@ pub fn bundle_with_levels(
     let locked = lock::open(&digest.value, &lock_dir).map_err(Refusal::Unreadable)?;
     let required = requirements(&recipe, &locked.manifest, providers).map_err(Refusal::Codec)?;
     let (title_text, description) = match recipe.kind {
+        Kind::Machine => return Err(Refusal::Codec("machine recipes are not built yet".into())),
         Kind::Media => {
             let merged = crate::merge::merge(&recipe, work.as_deref());
             (
@@ -671,6 +674,31 @@ pub fn output(recipe: &Recipe) -> String {
         .map(|n| n.value.as_str())
         .unwrap_or_default();
     format!("{name}:{}", crate::build::tag(recipe))
+}
+
+/// The recipe reference of a checked output, inserting recipes/ after its
+/// version's whole namespace and retaining the output tag.
+pub fn recipe_name(output: &str, version: &str) -> String {
+    recipe_name_in(output, version, None)
+}
+
+fn publisher_namespace<'a>(repository: &'a str, version: &str) -> Option<&'a str> {
+    if version == "1.1" {
+        // A platform or item can be named recipes, so the suffix determines its position.
+        repository
+            .rsplitn(5, '/')
+            .nth(4)
+            .filter(|namespace| crate::spec::namespace_valid(namespace))
+    } else {
+        Some(repository.split('/').next().unwrap_or_default())
+    }
+}
+
+fn recipe_name_in(output: &str, version: &str, publisher: Option<&str>) -> String {
+    let (name, tag) = output.rsplit_once(':').unwrap_or((output, ""));
+    let (namespace, rest) = crate::spec::namespace(name, version);
+    let namespace = publisher.unwrap_or(namespace);
+    format!("{namespace}/recipes/{rest}:{tag}")
 }
 
 /// The bundled inputs of `recipe`, `(name, size, sha256)`: single files
@@ -808,10 +836,9 @@ pub fn guard(
         disclosable(&recipe)?;
     }
     let output = output(&recipe);
-    let (name, own_tag) = output.rsplit_once(':').unwrap_or((&output, ""));
-    let namespace = repository.split('/').next().unwrap_or_default();
-    let rest = name.split_once('/').map_or("", |(_, rest)| rest);
-    let wanted = format!("{namespace}/recipes/{rest}:{own_tag}");
+    let version = recipe.version.as_ref().map_or("1.0", |v| v.value.as_str());
+    let namespace = publisher_namespace(repository, version);
+    let wanted = recipe_name_in(&output, version, namespace);
     if format!("{repository}:{tag}") != wanted {
         return Err(Refusal::Name {
             target: format!("{repository}:{tag}"),
@@ -1045,6 +1072,49 @@ mod tests {
             Err(Refusal::Codec(why)) => why,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn names_recipe_references_insert_after_the_whole_versioned_namespace() {
+        let target = "unemu/team/recipes/media/recipes/demo";
+        let publisher = publisher_namespace(target, "1.1");
+        assert_eq!(publisher, Some("unemu/team"));
+        assert_eq!(
+            recipe_name_in(
+                "private/experimental/media/recipes/demo:r1",
+                "1.1",
+                publisher
+            ),
+            format!("{target}:r1")
+        );
+        for (output, wanted) in [
+            (
+                "unemu/experimental/machines/ibm-pc/open-at:1.3.0",
+                "unemu/experimental/recipes/machines/ibm-pc/open-at:1.3.0",
+            ),
+            (
+                "unemu/experimental/media/ibm-pc/freedos-append:5.0-0.6-r1",
+                "unemu/experimental/recipes/media/ibm-pc/freedos-append:5.0-0.6-r1",
+            ),
+            (
+                "private/team/review/firmware/ibm-pc/bios:r1",
+                "private/team/review/recipes/firmware/ibm-pc/bios:r1",
+            ),
+            (
+                "unemu/machines/ibm-pc/open-at:1.3.0",
+                "unemu/recipes/machines/ibm-pc/open-at:1.3.0",
+            ),
+        ] {
+            assert_eq!(recipe_name(output, "1.1"), wanted);
+        }
+        assert_eq!(
+            recipe_name_in(
+                "private/team/media/ibm-pc/demo:r1",
+                "1.1",
+                Some("unemu/experimental")
+            ),
+            "unemu/experimental/recipes/media/ibm-pc/demo:r1"
+        );
     }
 
     #[test]

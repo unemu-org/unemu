@@ -586,9 +586,10 @@ pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Opti
         sink,
         version: version(table).map(|v| v.value).unwrap_or_default(),
     };
-    if table
-        .get("work")
-        .is_some_and(|w| matches!(w.get_ref(), DeValue::Table(_)))
+    if !(checker.version == "1.1" && table.contains_key("machine"))
+        && table
+            .get("work")
+            .is_some_and(|w| matches!(w.get_ref(), DeValue::Table(_)))
     {
         let node = checker.table(table, 0..0, "", &spec::WORK_FILE, &[]);
         let mut work = work_file(&node);
@@ -606,7 +607,10 @@ pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Opti
         .collect();
     identities.sort_by_key(|(_, span)| span.start);
     let mut skip: Vec<&'static str> = Vec::new();
-    if let Some((_, span)) = identities.iter().find(|(name, _)| *name == "machine") {
+    if let Some((_, span)) = identities
+        .iter()
+        .find(|(name, _)| *name == "machine" && checker.version != "1.1")
+    {
         checker.sink.report(
             Rule::Kind,
             span,
@@ -617,7 +621,7 @@ pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Opti
     }
     let kinds: Vec<&(&'static str, Range<usize>)> = identities
         .iter()
-        .filter(|(name, _)| *name != "machine")
+        .filter(|(name, _)| *name != "machine" || checker.version == "1.1")
         .collect();
     let Some((first, _)) = kinds.first() else {
         if skip.is_empty() {
@@ -630,10 +634,10 @@ pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Opti
         }
         return None;
     };
-    let kind = if *first == "media" {
-        Kind::Media
-    } else {
-        Kind::Firmware
+    let kind = match *first {
+        "media" => Kind::Media,
+        "machine" => Kind::Machine,
+        _ => Kind::Firmware,
     };
     for (name, span) in kinds.iter().skip(1) {
         checker.sink.report(
@@ -647,6 +651,7 @@ pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Opti
     let (spec, foreign, other): (&'static Table, &'static [&'static str], &str) = match kind {
         Kind::Media => (&spec::MEDIAFILE, spec::FIRMWARE_ONLY, "a Firmwarefile"),
         Kind::Firmware => (&spec::FIRMWAREFILE, spec::MEDIA_ONLY, "a Mediafile"),
+        Kind::Machine => (&spec::MACHINEFILE, &[], "another recipe kind"),
     };
     for (key, _) in table {
         let name = key.get_ref().as_ref();
@@ -759,6 +764,7 @@ fn recipe(kind: Kind, root: &Node) -> Recipe {
         name: identity.and_then(|n| n.str("name")),
         platform: identity.and_then(|n| n.str("platform")),
         release: identity.and_then(|n| n.str("release")),
+        version: identity.and_then(|n| n.str("version")),
         revision: identity.and_then(|n| n.int("revision")),
         digest: identity.and_then(|n| n.str("digest")),
         min_app_version: identity.and_then(|n| n.str("min_app_version")),
@@ -823,6 +829,37 @@ fn recipe(kind: Kind, root: &Node) -> Recipe {
         version: root.str("recipe"),
         work: root.str("work"),
         identity,
+        template: root.get("template").map(|t| Template {
+            config: t.str("config"),
+            disks: t
+                .get("disks")
+                .map(|d| {
+                    d.items()
+                        .iter()
+                        .map(|d| TemplateDisk {
+                            id: d.str("id"),
+                            size: d.size("size"),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            title: t.str("title"),
+            description: t.str("description"),
+            labels: t.strings("labels"),
+        }),
+        uses: root
+            .get("use")
+            .map(|u| {
+                u.entries()
+                    .iter()
+                    .map(|(id, u)| Use {
+                        id: id.clone(),
+                        image: u.str("image"),
+                        digest: u.str("digest"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         title: root.get("title").map(title),
         package: root.get("package").map(|p| {
             let fits = p.get("fits");

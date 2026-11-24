@@ -14,6 +14,13 @@ pub const NEWEST_ROW: AppVersion = NEXT_RELEASE;
 /// Recipe versions, the value of the top-level `recipe` key.
 pub const VERSIONS: &[Row] = &[("1.0", AppVersion::new(0, 0, 3)), ("1.1", NEXT_RELEASE)];
 
+/// Recipe kinds, named by their identity tables.
+pub const KINDS: &[Row] = &[
+    ("media", AppVersion::new(0, 0, 3)),
+    ("firmware", AppVersion::new(0, 0, 3)),
+    ("machine", NEXT_RELEASE),
+];
+
 /// Step kinds, by verb.
 pub const STEPS: &[Row] = &[
     ("unpack", AppVersion::new(0, 0, 3)),
@@ -27,12 +34,14 @@ pub const STEPS: &[Row] = &[
 pub struct Table<'a> {
     pub versions: &'a [Row],
     pub steps: &'a [Row],
+    pub kinds: &'a [Row],
 }
 
 /// This build's rows.
 pub const TABLE: Table<'static> = Table {
     versions: VERSIONS,
     steps: STEPS,
+    kinds: KINDS,
 };
 
 /// The verb of a step; `None` for a step whose verb could not be told,
@@ -69,6 +78,10 @@ pub fn required(
         .ok_or("the recipe states no version")?;
     let mut release = lookup(&[table.versions], version)
         .ok_or_else(|| format!("no compatibility row for recipe version {version}"))?;
+    release = release
+        .max(lookup(&[table.kinds], recipe.kind.key()).ok_or_else(|| {
+            format!("no compatibility row for recipe kind {}", recipe.kind.key())
+        })?);
     for step in &recipe.steps {
         release = release.max(self::step(&step.op, table)?);
     }
@@ -116,6 +129,10 @@ mod tests {
             assert!(lookup(&[VERSIONS], version).is_some());
         }
         assert_eq!(VERSIONS.len(), crate::spec::VERSIONS.len());
+        for identity in crate::spec::IDENTITIES {
+            assert!(lookup(&[KINDS], identity).is_some());
+        }
+        assert_eq!(lookup(&[KINDS], "machine"), Some(NEXT_RELEASE));
         for verb in crate::spec::VERBS {
             assert!(lookup(&[STEPS], verb).is_some(), "{verb}");
         }
@@ -124,12 +141,13 @@ mod tests {
             VERSIONS
                 .iter()
                 .chain(STEPS)
+                .chain(KINDS)
                 .map(|(_, release)| *release)
                 .max(),
             Some(NEWEST_ROW)
         );
         assert!(NEXT_RELEASE >= NEWEST_ROW);
-        for (_, release) in VERSIONS.iter().chain(STEPS) {
+        for (_, release) in VERSIONS.iter().chain(STEPS).chain(KINDS) {
             assert!(*release <= NEXT_RELEASE);
         }
     }

@@ -748,9 +748,17 @@ impl Runner<'_> {
     }
 }
 
-/// The tag a recipe's output takes: `<release>-r<revision>`, or
-/// `r<revision>` without a release (recipes §6.3).
+/// The tag a recipe's output takes: a machine's SemVer version, or
+/// `[<release>-]r<revision>` for media and firmware.
 pub fn tag(recipe: &Recipe) -> String {
+    if recipe.kind == Kind::Machine {
+        return recipe
+            .identity
+            .version
+            .as_ref()
+            .map(|v| v.value.clone())
+            .unwrap_or_default();
+    }
     let revision = recipe.identity.revision.as_ref().map_or(0, |r| r.value);
     match &recipe.identity.release {
         Some(release) => format!("{}-r{revision}", release.value),
@@ -1070,6 +1078,12 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         crate::Opened::Work => return Ok(Outcome::NotRecipe),
         crate::Opened::Recipe(recipe, work, bytes) => (*recipe, work, bytes),
     };
+    if recipe.kind == Kind::Machine {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "machine recipes are not built yet",
+        ));
+    }
     let file = request.path.display().to_string();
     // The digest of the recipe text this build reads, recorded on the tag
     // it writes (`unemu.build.recipe`, recipes §7.3).
@@ -1187,7 +1201,7 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
             Some(merged) => Some(merged),
             None => return failed(plan, "the recipe states no title".into()),
         },
-        Kind::Firmware => None,
+        Kind::Firmware | Kind::Machine => None,
     };
     let gathered = match gather(&recipe, &plan, request.libraries, request.store_read) {
         Ok(gathered) => gathered,
@@ -1830,6 +1844,19 @@ mod tests {
 
     fn bytes(b: &[u8]) -> Bytes {
         Arc::new(b.to_vec())
+    }
+
+    #[test]
+    fn machine_template_version_is_the_output_tag() {
+        let text = "recipe = \"1.1\"\n[machine]\nname = \"unemu/machines/ibm-pc/open-at\"\nplatform = \"ibm-pc\"\nversion = \"1.3.0\"\n[template]\nconfig = \"config\"\n";
+        let crate::model::Document::Recipe(recipe) = crate::parse_text(text).unwrap() else {
+            panic!("expected a recipe");
+        };
+        assert_eq!(tag(&recipe), "1.3.0");
+        assert_eq!(
+            crate::artifact::output(&recipe),
+            "unemu/machines/ibm-pc/open-at:1.3.0"
+        );
     }
 
     /// The steps run on the gathered bytes alone: the same bytes give the
