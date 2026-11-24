@@ -1008,6 +1008,27 @@ cargo run --offline -p window -- image template build --vendor "$UNEMUPC_FIXTURE
 cargo run --offline -p window -- image template build --vendor "$UNEMUPC_FIXTURE_ROOT/vendor" --vendor vendor --store /path/to/templates
 ```
 
+`image template config --out DIR` writes `open-at.pc.toml`,
+`open-at.machine.toml`, `open-at-games.pc.toml` and
+`open-at-games.machine.toml`. It needs neither a store nor fixtures. Each
+line reports the file name, exact byte size, SHA-256 and media type, separated
+by tabs. The config documents use the PC launch media type and schema 1
+(envelope and hardware); the draft recipes use recipe 1.1 and pin the same
+firmware packages as the historical templates. Their fixed disk uses journal
+writes, and both floppy drives start empty. The games profile includes SB16,
+COM1 mouse and EMS settings from the shared template definition.
+
+```sh
+cargo run --offline -p window -- image template config --out /path/to/template-inputs
+```
+
+Build the emitted recipes with `recipe build FILE --store DIR --fetch` under
+the usual download consent policy. They produce new `1.3.0` machines under
+`unemu/machines/ibm-pc/open-at` and `unemu/machines/ibm-pc/open-at-games`.
+Software retains the inputs and publishes these machines. Recipe preparation
+requires the next front-end release, currently 0.0.6. The historical command
+below retains its published `1.2.0` outputs and pins.
+
 `image template build` builds the two template machines and nothing else. It
 is a command rather than a script around `image firmware import` and New
 machine…: the template machines come from the create API (`pc_image::create`),

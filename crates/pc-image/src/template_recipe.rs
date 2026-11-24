@@ -224,3 +224,25 @@ pub(super) fn build(
         other => Err(invalid(format!("{reference}: {other:#?}"))),
     }
 }
+
+/// Reuse the published package identity embedded with its historical lock.
+pub(super) fn firmware_pin(reference: &str) -> Result<String> {
+    let bundle = BUNDLES
+        .iter()
+        .find(|bundle| bundle.reference == reference)
+        .ok_or_else(|| invalid("template firmware recipe is missing"))?;
+    let bytes = bundle
+        .files
+        .iter()
+        .find(|(name, _)| *name == bundle.recipe)
+        .ok_or_else(|| invalid("template firmware recipe text is missing"))?
+        .1;
+    let text = std::str::from_utf8(bytes).map_err(|e| invalid(e.to_string()))?;
+    let table: toml::Table = toml::from_str(text).map_err(|e| invalid(e.to_string()))?;
+    table
+        .get("firmware")
+        .and_then(|v| v.get("digest"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| invalid("template firmware recipe has no digest"))
+}

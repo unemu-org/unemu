@@ -1620,6 +1620,19 @@ For one namespace segment the mapping matches 1.0 exactly. A publisher may
 choose another namespace under the existing publication rules; it too is
 kept whole before `recipes/`.
 
+`image template config --out DIR` emits complete bound-form PC launch inputs
+and matching draft machine recipes for the two official templates. It derives
+hardware from the historical template definitions and firmware identities from
+their embedded published package recipes. Inputs include both empty floppy
+drives, the journalled fixed disk's id, geometry and exact size, explicit ROM
+roles and addresses, and the games profile's sound, mouse and EMS settings.
+The emitted recipes use 1.1 and new `1.3.0` names under
+`unemu/machines/ibm-pc/`; they do not restamp the published 1.2.0 templates.
+Each file is reported with its byte length, SHA-256 and media type. Software
+keeps these files and publishes the machines. Local acceptance builds each
+recipe twice in fresh stores and compares decoded machines with 1.2.0;
+software's published digests require an independent cross-check.
+
 Static `recipe check` validates this structure without opening inputs,
 contacting a registry or calling a core. Config bindings and package
 closure require resolved checks.

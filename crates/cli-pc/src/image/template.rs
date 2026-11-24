@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `image template build`: the official template machines, built
+//! `image template build` and `config`: official machines and recipe inputs, built
 //! reproducibly from the fetched open fixtures; machine-images §5.5.
 //!
 //! The build runs [`pc_image::template::build`] with the push guard of the
@@ -28,15 +28,33 @@ use pc_image::template::{self, Built, Kind, Outcome};
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct TemplateCommand {
+pub enum TemplateCommand {
+    Build(TemplateBuild),
+    Config { out: PathBuf },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct TemplateBuild {
     store: PathBuf,
     vendor: Vec<PathBuf>,
     dry_run: bool,
 }
 
 pub fn parse(args: &[OsString]) -> Result<TemplateCommand, &'static str> {
+    if args.first().and_then(|a| a.to_str()) == Some("config") {
+        return match &args[1..] {
+            [option, out]
+                if option == "--out"
+                    && !out.is_empty()
+                    && !out.as_encoded_bytes().starts_with(b"--") =>
+            {
+                Ok(TemplateCommand::Config { out: out.into() })
+            }
+            _ => Err("expected image template config --out DIR"),
+        };
+    }
     if args.first().and_then(|a| a.to_str()) != Some("build") {
-        return Err("expected image template build");
+        return Err("expected image template build or config");
     }
     let (mut store, mut vendor, mut dry_run) = (None, Vec::new(), false);
     let mut args = args[1..].iter();
@@ -55,7 +73,7 @@ pub fn parse(args: &[OsString]) -> Result<TemplateCommand, &'static str> {
             _ => return Err("unknown or duplicate template option"),
         }
     }
-    Ok(TemplateCommand {
+    Ok(TemplateCommand::Build(TemplateBuild {
         store: store.ok_or("image commands require --store DIR")?,
         // The fixture scripts write under the repository's vendor directory.
         vendor: if vendor.is_empty() {
@@ -64,7 +82,7 @@ pub fn parse(args: &[OsString]) -> Result<TemplateCommand, &'static str> {
             vendor
         },
         dry_run,
-    })
+    }))
 }
 
 /// The guard `image push` applies to `unemu/` on the default registry, with
@@ -156,6 +174,25 @@ pub fn execute_with_compatibility(
     output: &mut impl Write,
     compatibility: &image_store::compat::Compatibility,
 ) -> anyhow::Result<()> {
+    let command = match command {
+        TemplateCommand::Config { out } => {
+            let documents = template::inputs::emit()?;
+            std::fs::create_dir_all(&out)?;
+            for document in documents {
+                std::fs::write(out.join(&document.name), &document.bytes)?;
+                writeln!(
+                    output,
+                    "{}\t{}\t{}\t{}",
+                    document.name,
+                    document.bytes.len(),
+                    image_store::Digest::of(&document.bytes),
+                    document.media_type
+                )?;
+            }
+            return Ok(());
+        }
+        TemplateCommand::Build(command) => command,
+    };
     let mut failed: Option<anyhow::Error> = None;
     if !command.dry_run {
         let store = Store::open(&command.store)?.with_compatibility(compatibility.clone());
@@ -227,6 +264,51 @@ pub fn execute_with_compatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_emission_writes_and_reports_each_document_without_a_store() {
+        let temp = machine_file::test_support::TempDir::new("template-config");
+        let args = vec![
+            OsString::from("config"),
+            OsString::from("--out"),
+            temp.path().as_os_str().to_owned(),
+        ];
+        let command = parse(&args).unwrap();
+        let mut output = Vec::new();
+        execute_with_compatibility(
+            command,
+            &mut output,
+            &pc_image::compat::compatibility(pc_image::compat::NEXT_RELEASE),
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.lines().count(), 4);
+        for line in output.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4);
+            let bytes = std::fs::read(temp.path().join(fields[0])).unwrap();
+            assert_eq!(fields[1], bytes.len().to_string());
+            assert_eq!(fields[2], image_store::Digest::of(&bytes).to_string());
+            assert!(fields[3].starts_with("application/"));
+        }
+        assert!(!temp.path().join("store.toml").exists());
+        let mut again = Vec::new();
+        execute_with_compatibility(
+            parse(&args).unwrap(),
+            &mut again,
+            &pc_image::compat::compatibility(pc_image::compat::NEXT_RELEASE),
+        )
+        .unwrap();
+        assert_eq!(output.as_bytes(), again);
+        for bad in [
+            vec!["config"],
+            vec!["config", "--store", "s"],
+            vec!["config", "--out", "a", "--out", "b"],
+            vec!["config", "--out", "a", "--dry-run"],
+        ] {
+            assert!(parse(&os(&bad)).is_err());
+        }
+    }
 
     /// The official guard also refuses a manifest that does not declare the
     /// release the PC tables compute, as a push into `unemu/` does.
@@ -316,14 +398,17 @@ mod tests {
     fn parsing_needs_build_and_a_store_and_defaults_the_vendor_directory() {
         assert_eq!(
             parse(&os(&["build", "--store", "s", "--dry-run"])),
-            Ok(TemplateCommand {
+            Ok(TemplateCommand::Build(TemplateBuild {
                 store: "s".into(),
                 vendor: vec!["vendor".into()],
                 dry_run: true,
-            })
+            }))
         );
         assert_eq!(
-            parse(&os(&["build", "--vendor", "v", "--store", "s"])).map(|c| c.vendor),
+            parse(&os(&["build", "--vendor", "v", "--store", "s"])).map(|c| match c {
+                TemplateCommand::Build(c) => c.vendor,
+                _ => panic!("expected build"),
+            }),
             Ok(vec!["v".into()])
         );
         for bad in [

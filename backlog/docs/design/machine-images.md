@@ -2451,6 +2451,21 @@ user starts from is an **official template image**: an ordinary machine image in
 the official namespace of the default registry, pulled into the local store
 like any other (§5.1), never a machine file.
 
+**Recipe-built generation.** `image template config --out DIR` emits complete
+schema-1 bound PC launch documents and matching recipe 1.1 drafts, without
+fixtures or a store. It reports each file's name, byte size, SHA-256 and media
+type. Both use the historical template hardware definitions and published
+firmware package pins. The new machines are version `1.3.0` at
+`unemu/machines/ibm-pc/open-at` and `unemu/machines/ibm-pc/open-at-games`.
+Software retains the inputs and owns publication. These machines store the
+portable launch returned by composition and carry its compatibility markers;
+preparing their recipes requires the next front-end release (currently 0.0.6).
+The `image template build` path and the published 1.2.0 templates below remain
+unchanged. Acceptance compares hardware, firmware bytes and roles, drives,
+disk sizes and source/rights closure across the two config forms, and requires
+two fresh-store recipe builds to agree. Software's published 1.3.0 digests
+are checked independently.
+
 **Naming.** Templates and the firmware packages they use live under `unemu/` on
 `registry.unemu.dev`, with Docker-style short names (§5.1):
 

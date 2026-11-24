@@ -59,6 +59,7 @@ image registry set registry.unemu.dev --namespace unemu --namespace private:priv
 image registry set nas.example:5000 --private
 image template build --store /path/to/templates --dry-run
 image template build --store /path/to/templates
+image template config --out /path/to/template-inputs
 image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store /path/to/store
 image pull unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1 --store /path/to/store
 image pull unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1 --store /path/to/store

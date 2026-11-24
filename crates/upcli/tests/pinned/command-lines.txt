@@ -185,13 +185,13 @@ $ image registry set HOST --namespace NAME --namespace OTHER:private --namespace
 Ok(Line(Image(Registry(Set { host: "HOST", private: false, namespaces: ["NAME", "OTHER:private", "THIRD:public"], config: None }))))
 
 $ image template build --store DIR
-Ok(Line(Platform(Image(Template(TemplateCommand { store: "DIR", vendor: ["vendor"], dry_run: false })))))
+Ok(Line(Platform(Image(Template(Build(TemplateBuild { store: "DIR", vendor: ["vendor"], dry_run: false }))))))
 
 $ image template build --store DIR --vendor DIR --dry-run
-Ok(Line(Platform(Image(Template(TemplateCommand { store: "DIR", vendor: ["DIR"], dry_run: true })))))
+Ok(Line(Platform(Image(Template(Build(TemplateBuild { store: "DIR", vendor: ["DIR"], dry_run: true }))))))
 
 $ image template build --store DIR --vendor DIR --vendor DIR2 --dry-run
-Ok(Line(Platform(Image(Template(TemplateCommand { store: "DIR", vendor: ["DIR", "DIR2"], dry_run: true })))))
+Ok(Line(Platform(Image(Template(Build(TemplateBuild { store: "DIR", vendor: ["DIR", "DIR2"], dry_run: true }))))))
 
 $ recipe check FILE FOLDER
 Ok(Line(Recipe(Check(["FILE", "FOLDER"]))))
@@ -353,7 +353,7 @@ $ image machine
 Err("expected image machine ls, new, rename, duplicate, reset, rm, settings, commit, export or run")
 
 $ image template
-Err("expected image template build")
+Err("expected image template build or config")
 
 $ image workspace discard
 Err("workspace discard requires NAME")
@@ -608,10 +608,13 @@ $ image registry set nas.example:5000 --private
 Ok(Line(Image(Registry(Set { host: "nas.example:5000", private: true, namespaces: [], config: None }))))
 
 $ image template build --store /path/to/templates --dry-run
-Ok(Line(Platform(Image(Template(TemplateCommand { store: "/path/to/templates", vendor: ["vendor"], dry_run: true })))))
+Ok(Line(Platform(Image(Template(Build(TemplateBuild { store: "/path/to/templates", vendor: ["vendor"], dry_run: true }))))))
 
 $ image template build --store /path/to/templates
-Ok(Line(Platform(Image(Template(TemplateCommand { store: "/path/to/templates", vendor: ["vendor"], dry_run: false })))))
+Ok(Line(Platform(Image(Template(Build(TemplateBuild { store: "/path/to/templates", vendor: ["vendor"], dry_run: false }))))))
+
+$ image template config --out /path/to/template-inputs
+Ok(Line(Platform(Image(Template(Config { out: "/path/to/template-inputs" })))))
 
 $ image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store /path/to/store
 Ok(Line(Image(Registry(Pull { store: "/path/to/store", source: "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1", local_tag: None, create: false, options: Common { registry: None, config: None } }))))

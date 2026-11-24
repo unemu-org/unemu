@@ -44,6 +44,9 @@ use std::path::PathBuf;
 #[path = "template_recipe.rs"]
 mod recipe_build;
 
+#[path = "template_inputs.rs"]
+pub mod inputs;
+
 /// The version tag of this template generation. Version tags never move, so
 /// a changed template needs a new version here.
 pub const VERSION: &str = "1.2.0";

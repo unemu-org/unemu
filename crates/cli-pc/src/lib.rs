@@ -231,7 +231,7 @@ impl CliPlatform for PcPlatform<'_> {
             "                   [--dumped-from T | --downloaded-from T | --built-from T] [--revision R] [--url U] [--provenance-date YYYY-MM-DD]\n",
             "                   [--open [--license SPDX] | --user-supplied] [--source ARCHIVE.tar|.zip [--source-license SPDX]]\n",
         ),
-        UsageSlot::AfterRegistry => "       unemu image template build --store DIR [--vendor DIR]... [--dry-run]\n",
+        UsageSlot::AfterRegistry => concat!("       unemu image template build --store DIR [--vendor DIR]... [--dry-run]\n", "       unemu image template config --out DIR\n"),
         UsageSlot::AfterRecipe => concat!(
             "       unemu media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]\n",
             "       unemu media create floppy --type 1.44M|1.2M|720K|360K OUT --add PATH [--add PATH]... [--top NAME] [--label NAME] [--split] [--force]\n",

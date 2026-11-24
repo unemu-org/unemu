@@ -45,6 +45,7 @@ usage: unemu --version | --about (licence, source and third-party notices)
        unemu image login HOST --user NAME [--config FILE]
        unemu image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
        unemu image template build --store DIR [--vendor DIR]... [--dry-run]
+       unemu image template config --out DIR
        unemu recipe check FILE|FOLDER... [--deny-drift] (the static checks of recipes and work files; exit 0 clean, 1 with findings)
        unemu recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)
        unemu recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE] (where each input is found, or why not; a REF is judged from its manifest and config; exit 0 all found, 1 missing)
