@@ -68,6 +68,7 @@ pub const FIT_BOARDS: &[Row] = &[
     ("compaq-deskpro", BASELINE),
     ("tandy-1000", BASELINE),
     ("generic-386-isa", BASELINE),
+    ("generic-486-isa", NEXT_RELEASE),
     ("i440fx-piix3", BASELINE),
     ("i440bx-piix4", BASELINE),
 ];
@@ -95,7 +96,7 @@ pub fn level() -> AppVersion {
 
 /// PC front-end rows, kept separate from the core rows in `pc_config::compat`.
 pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 5);
-pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
+pub const NEWEST_ROW: AppVersion = NEXT_RELEASE;
 
 /// Standalone PC tools supply their application release explicitly.
 pub fn compatibility(frontend: AppVersion) -> Compatibility {
@@ -384,6 +385,39 @@ mod tests {
         }
         for kind in assembly::descriptors::FLOPPY_TYPES {
             assert!(compat::lookup(&[MEDIA_FORMATS], kind.name).is_some());
+        }
+    }
+
+    #[test]
+    fn every_package_board_in_the_core_vocabulary_has_a_fit_row() {
+        use serde::{de, Deserialize};
+        #[derive(Debug)]
+        struct Names(&'static [&'static str]);
+        impl std::fmt::Display for Names {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("board names")
+            }
+        }
+        impl std::error::Error for Names {}
+        impl de::Error for Names {
+            fn custom<T: std::fmt::Display>(_: T) -> Self {
+                Self(&[])
+            }
+            fn unknown_variant(_: &str, expected: &'static [&'static str]) -> Self {
+                Self(expected)
+            }
+        }
+        let error = pc_config::schema::v1::BoardModel::deserialize(de::value::StrDeserializer::<
+            Names,
+        >::new(""))
+        .unwrap_err();
+        assert!(!error.0.is_empty());
+        for board in error.0 {
+            // A bare board is a Rust test rig and cannot consume file-based firmware packages.
+            if *board != "bare" {
+                assert!(compat::lookup(&[FIT_BOARDS], board).is_some(), "{board}");
+                assert!(BOARDS.contains(board), "{board}");
+            }
         }
     }
 

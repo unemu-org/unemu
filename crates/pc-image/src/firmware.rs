@@ -104,9 +104,21 @@ pub fn restricted(
     Ok(digests)
 }
 
-/// Production catalogue; callers may inject synthetic identities for isolation tests.
+/// Production catalogues in board order; callers may inject synthetic identities for tests.
 pub fn catalogue() -> &'static [assembly::FirmwareEntry] {
-    assembly::BoardModel::Ibm5170.firmware_catalogue()
+    static CATALOGUE: std::sync::OnceLock<Vec<assembly::FirmwareEntry>> =
+        std::sync::OnceLock::new();
+    CATALOGUE.get_or_init(|| {
+        let mut entries = Vec::new();
+        for board in crate::firmware_package::EXECUTABLE_BOARDS {
+            for entry in board.firmware_catalogue() {
+                if !entries.contains(entry) {
+                    entries.push(*entry);
+                }
+            }
+        }
+        entries
+    })
 }
 
 #[cfg(test)]

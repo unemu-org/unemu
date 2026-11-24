@@ -723,6 +723,10 @@ fn known(
     if catalogue.is_some_and(|catalogue| locked_by(config, catalogue).is_some()) {
         return Ok(Some(assembly::FirmwareDistribution::UserSupplied));
     }
+    let fitted = catalogue
+        .map(|entries| Fit::decode(&config.fits)?.catalogue(entries))
+        .transpose()?;
+    let catalogue = fitted.as_deref();
     let mut listed = Vec::new();
     for id in config.roms.iter().filter_map(|r| r.catalogue_id.as_deref()) {
         listed.push(match catalogue {
@@ -915,7 +919,11 @@ fn stated(text: &Option<String>) -> Option<String> {
 }
 
 /// Apply the descriptive part of a statement to a config.
-fn apply(config: &mut Config, statement: &Statement) -> Result<()> {
+fn apply(
+    config: &mut Config,
+    statement: &Statement,
+    catalogue: Option<&[assembly::FirmwareEntry]>,
+) -> Result<()> {
     if let Some(title) = &statement.title {
         if !image_store::media_set::valid_text(title) {
             return Err(invalid("the title must be one line of 1 to 128 characters"));
@@ -955,6 +963,30 @@ fn apply(config: &mut Config, statement: &Statement) -> Result<()> {
         }
         if let Some(classes) = &statement.machine_classes {
             fit.machine_classes = sorted(classes);
+        }
+        // Metadata edits may narrow a catalogue claim even though package checks accept a union of boards.
+        if let Some(catalogue) = catalogue {
+            let entries = fit.catalogue(catalogue)?;
+            for id in config
+                .roms
+                .iter()
+                .filter_map(|rom| rom.catalogue_id.as_deref())
+            {
+                if let Some(entry) = entries.iter().find(|entry| entry.id == id) {
+                    let allowed = catalogue_fit(entry);
+                    if fit
+                        .boards
+                        .iter()
+                        .any(|board| !allowed.boards.contains(board))
+                        || fit
+                            .machine_classes
+                            .iter()
+                            .any(|class| !allowed.machine_classes.contains(class))
+                    {
+                        return Err(invalid("firmware catalogue fit may only be narrowed"));
+                    }
+                }
+            }
         }
         config.fits = fit.table()?;
     }
@@ -1440,7 +1472,7 @@ fn plan(
         ));
     }
     let source = statement.source.as_deref().map(archive).transpose()?;
-    apply(&mut config, statement)?;
+    apply(&mut config, statement, catalogue)?;
     let known = known(&config, catalogue, Some(candidate.distribution))?;
     let default = match known {
         Some(assembly::FirmwareDistribution::Open { license, .. }) => {
@@ -1955,7 +1987,7 @@ fn edit_plan(
         let license = license::open_license(&d);
         extras.push((Payload::Stored, d, license));
     }
-    apply(&mut config, statement)?;
+    apply(&mut config, statement, Some(catalogue))?;
     let known = known(&config, Some(catalogue), None)?;
     let mut plan = decide(
         config,

@@ -166,7 +166,22 @@ fn firmware(store: &Store, artifact: &Staged) -> Result<Published, String> {
             artifact.roms.len()
         ));
     };
-    let catalogue = crate::firmware::catalogue();
+    let fit = crate::firmware::Fit {
+        boards: artifact
+            .package
+            .as_ref()
+            .and_then(|p| p.boards.clone())
+            .unwrap_or_default(),
+        machine_classes: artifact
+            .package
+            .as_ref()
+            .and_then(|p| p.machine_classes.clone())
+            .unwrap_or_default(),
+    };
+    let fitted_catalogue = fit
+        .catalogue(crate::firmware::catalogue())
+        .map_err(|e| e.to_string())?;
+    let catalogue = fitted_catalogue.as_slice();
     let paths: Vec<PathBuf> = rom.files.iter().map(|f| f.path.clone()).collect();
     let scan = firmware_import::scan(&paths, catalogue).map_err(|e| e.to_string())?;
     let mut candidates: Vec<_> = scan

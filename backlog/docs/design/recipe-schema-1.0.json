@@ -641,6 +641,7 @@
               "compaq-deskpro",
               "tandy-1000",
               "generic-386-isa",
+              "generic-486-isa",
               "i440fx-piix3",
               "i440bx-piix4"
             ]

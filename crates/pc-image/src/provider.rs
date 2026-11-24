@@ -851,7 +851,7 @@ mod tests {
     use std::cell::RefCell;
 
     // Moving the core pin requires checking the recorded golden again.
-    const CORE_REV: &str = "8b8f1d3818c0805368448a14c58c850d188bb74f";
+    const CORE_REV: &str = "4d638ccc4e2b13d3bb7385168a5de745931fed33";
 
     #[test]
     fn golden_core_revision_matches_lock() {

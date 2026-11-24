@@ -947,6 +947,8 @@ fn open_sources(store: &Store, packages: &[Digest]) -> Result<BTreeMap<Digest, E
             }
             let image = store.resolve_descriptor(&tag.manifest, &validator)?;
             let config = image_store::firmware::Config::decode(&image.config)?;
+            let fitted_catalogue =
+                crate::firmware::Fit::decode(&config.fits)?.catalogue(catalogue)?;
             for rom in &config.roms {
                 let Some(archive) = config.source_of(&rom.id) else {
                     continue;
@@ -956,7 +958,7 @@ fn open_sources(store: &Store, packages: &[Digest]) -> Result<BTreeMap<Digest, E
                 }) = rom
                     .catalogue_id
                     .as_deref()
-                    .and_then(|id| catalogue.iter().find(|e| e.id == id))
+                    .and_then(|id| fitted_catalogue.iter().find(|e| e.id == id))
                     .map(|e| e.distribution)
                 else {
                     continue;

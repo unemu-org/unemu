@@ -1514,3 +1514,73 @@ fn an_in_memory_package_rom_is_not_searched_for_in_fallback_folders() {
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(prepared.load(assembly::AssemblyOptions::default()).is_ok());
 }
+
+#[test]
+fn package_catalogue_uses_any_fitted_board_and_rejects_conflicting_entries() {
+    use image_store::firmware::FirmwareRules;
+    let temp = Temp::new();
+    let root = chips(&temp);
+    let mut entries = catalogue();
+    entries[0].boards = &["generic-386-isa", "generic-486-isa"];
+    let scan = firmware_import::scan(&[root], &entries).unwrap();
+    let store = temp.store();
+    let descriptor = firmware_import::publish(&store, &scan.candidates[0], &[], &entries).unwrap();
+    let image = store
+        .resolve(
+            &tag_of(&store, &scan.candidates[0]),
+            &Validator(&PcFirmwareRules(&entries)),
+        )
+        .unwrap();
+    assert_eq!(image.image.digest, descriptor.digest);
+    let release = pc_image::compat::releases(&image.manifest, &image.config).unwrap();
+    assert_eq!(release.frontend, pc_image::compat::NEXT_RELEASE);
+    let mut older = Config::decode(&image.config).unwrap();
+    let mut older_fit = Fit::decode(&older.fits).unwrap();
+    older_fit.boards.retain(|b| b != "generic-486-isa");
+    older.fits = older_fit.table().unwrap();
+    assert!(
+        pc_image::compat::releases(&image.manifest, &older.encode().unwrap())
+            .unwrap()
+            .frontend
+            < release.frontend
+    );
+    let mut config = Config::decode(&image.config).unwrap();
+    let mut fits = Fit::decode(&config.fits).unwrap();
+    fits.boards.push("ibm-5170".into());
+    config.fits = fits.table().unwrap();
+    PcFirmwareRules(&entries)
+        .validate(&config, &store, &image.manifest.layers)
+        .unwrap();
+    let mut equal = entries.clone();
+    equal.push(entries[0]);
+    PcFirmwareRules(&equal)
+        .validate(&config, &store, &image.manifest.layers)
+        .unwrap();
+    let mut conflicting = equal;
+    conflicting[1].requires = &[];
+    assert!(PcFirmwareRules(&conflicting)
+        .validate(&config, &store, &image.manifest.layers)
+        .unwrap_err()
+        .to_string()
+        .contains("disagree"));
+    fits.boards = vec!["ibm-5170".into()];
+    config.fits = fits.table().unwrap();
+    assert!(PcFirmwareRules(&entries)
+        .validate(&config, &store, &image.manifest.layers)
+        .is_err());
+}
+
+#[test]
+fn metadata_statement_cannot_widen_a_catalogue_fit() {
+    let temp = Temp::new();
+    let entries = catalogue();
+    let scan = firmware_import::scan(&[chips(&temp)], &entries).unwrap();
+    let statement = firmware_import::Statement {
+        boards: Some(vec!["ibm-5170".into(), "generic-386-isa".into()]),
+        ..Default::default()
+    };
+    assert!(
+        firmware_import::preview_manifest_with(&scan.candidates[0], &[], &statement, &entries)
+            .is_err()
+    );
+}

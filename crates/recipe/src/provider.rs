@@ -140,6 +140,14 @@ pub struct CatalogueEntry {
 
 /// Firmware rules of a provider.
 pub trait FirmwareProfile {
+    /// A package-specific catalogue; `None` keeps the platform-wide profile.
+    fn for_package(
+        &self,
+        _package: Option<&crate::model::Package>,
+    ) -> Option<Box<dyn FirmwareProfile + '_>> {
+        None
+    }
+
     /// The roles of a `[[rom]]` (`system-bios`).
     fn roles(&self) -> &[&str];
     /// The lanes of a ROM's chip (`even`, `odd`).

@@ -745,8 +745,11 @@ fn identified(recipe: &Recipe, rom: &crate::model::Rom, provider: &dyn Provider)
     else {
         return None;
     };
-    provider
-        .firmware()
+    let firmware = provider.firmware();
+    let scoped = firmware.for_package(recipe.package.as_ref());
+    scoped
+        .as_deref()
+        .unwrap_or(firmware)
         .identify(&sha256.value, size.value)
         .map(|(id, _)| id)
 }
@@ -930,7 +933,9 @@ fn package(
         );
     }
     if let Some(provider) = provider {
-        catalogue_fields(c, config, provider);
+        let firmware = provider.firmware();
+        let scoped = firmware.for_package(recipe.package.as_ref());
+        catalogue_fields(c, config, scoped.as_deref().unwrap_or(firmware));
     }
 }
 
@@ -939,11 +944,15 @@ fn package(
 /// package's provenance, the entry's text for open firmware and none for
 /// user-supplied. A lock that differs would carry text of its own into the
 /// generated config and README.
-fn catalogue_fields(c: &mut Comparer<'_>, config: &firmware::Config, provider: &dyn Provider) {
+fn catalogue_fields(
+    c: &mut Comparer<'_>,
+    config: &firmware::Config,
+    firmware: &dyn crate::provider::FirmwareProfile,
+) {
     let entry = |rom: &firmware::Rom| {
         rom.catalogue_id
             .as_deref()
-            .and_then(|id| provider.firmware().entry(id))
+            .and_then(|id| firmware.entry(id))
     };
     for (index, rom) in config.roms.iter().enumerate() {
         let mut requires = rom.requires.clone();

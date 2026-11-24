@@ -8,13 +8,13 @@ $ --about
 Ok(About)
 
 $ run --machine FILE
-Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "FILE", max_steps: 20000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, print: None, options: AssemblyOptions { allow_unlisted_firmware: false } })))
+Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "FILE", max_steps: 20000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, turbo: false, print: None, options: AssemblyOptions { allow_unlisted_firmware: false } })))
 
 $ run --machine FILE --no-store
-Ok(Line(Platform(Run { store: Disabled, rom_dirs: [], path: "FILE", max_steps: 20000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, print: None, options: AssemblyOptions { allow_unlisted_firmware: false } })))
+Ok(Line(Platform(Run { store: Disabled, rom_dirs: [], path: "FILE", max_steps: 20000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, turbo: false, print: None, options: AssemblyOptions { allow_unlisted_firmware: false } })))
 
 $ run --machine FILE --store DIR --rom-dir DIR --max-steps 5 --idle-limit 6 --print CARD --allow-unlisted-firmware
-Ok(Line(Platform(Run { store: Root("DIR"), rom_dirs: ["DIR"], path: "FILE", max_steps: 5, idle_limit: 6, diag_at: None, trace_exceptions: false, print: Some("CARD"), options: AssemblyOptions { allow_unlisted_firmware: true } })))
+Ok(Line(Platform(Run { store: Root("DIR"), rom_dirs: ["DIR"], path: "FILE", max_steps: 5, idle_limit: 6, diag_at: None, trace_exceptions: false, turbo: false, print: Some("CARD"), options: AssemblyOptions { allow_unlisted_firmware: true } })))
 
 $ image import FILE --store DIR --tag NAME:TAG
 Ok(Line(Platform(Image(Import { machine: "FILE", store: "DIR", tag: "NAME:TAG", create: false, options: ImportOptions { recovery: {}, rom_dirs: [], no_compress: false, min_app_version: None } }))))
@@ -668,7 +668,7 @@ $ image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wol
 Ok(Line(Image(Registry(Push { store: "/path/to/store", local_tag: "private/media/ibm-pc/wolf3d-shareware:1.4-r1", target: Some("unemu/media/ibm-pc/wolf3d-shareware:1.4-r1"), options: Common { registry: None, config: None }, allow_move: false, dry_run: true }))))
 
 $ run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
-Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "machines/at-freedos.toml", max_steps: 12000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, print: Some("mda"), options: AssemblyOptions { allow_unlisted_firmware: false } })))
+Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "machines/at-freedos.toml", max_steps: 12000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, turbo: false, print: Some("mda"), options: AssemblyOptions { allow_unlisted_firmware: false } })))
 
 $ recipe check backlog/docs/design/recipe-corpus crates/pc-image/data/recipes
 Ok(Line(Recipe(Check(["backlog/docs/design/recipe-corpus", "crates/pc-image/data/recipes"]))))

@@ -914,7 +914,7 @@ fn license(
             let Some(provider) = provider else { return };
             for rom in &recipe.roms {
                 let bytes = rom_bytes(rom, names, sink);
-                for (id, entry) in rom_entries(rom, &bytes, provider) {
+                for (id, entry) in rom_entries(rom, &bytes, provider, recipe.package.as_ref()) {
                     match (&entry.license, &expression) {
                         (None, _) => sink.report(
                             Rule::License,
@@ -1019,8 +1019,11 @@ fn rom_entries(
     rom: &Rom,
     bytes: &RomBytes,
     provider: &dyn Provider,
+    package: Option<&crate::model::Package>,
 ) -> Vec<(String, CatalogueEntry)> {
     let firmware = provider.firmware();
+    let scoped = firmware.for_package(package);
+    let firmware = scoped.as_deref().unwrap_or(firmware);
     if let Some(id) = &rom.catalogue_id {
         return firmware
             .entry(&id.value)
@@ -1143,6 +1146,8 @@ fn vocabulary(recipe: &Recipe, sink: &mut Sink<'_>, provider: &dyn Provider) {
         }
     }
     let firmware = provider.firmware();
+    let scoped = firmware.for_package(recipe.package.as_ref());
+    let firmware = scoped.as_deref().unwrap_or(firmware);
     for rom in &recipe.roms {
         if let Some(role) = &rom.role {
             one_of(sink, role, firmware.roles(), "a ROM role", provider);
@@ -1363,7 +1368,7 @@ fn platform_rules(
     }
     for rom in &recipe.roms {
         let bytes = rom_bytes(rom, names, sink);
-        for (id, entry) in rom_entries(rom, &bytes, provider) {
+        for (id, entry) in rom_entries(rom, &bytes, provider, recipe.package.as_ref()) {
             // An entry found by a chip is no claim about the whole ROM.
             if rom.catalogue_id.is_none()
                 && bytes

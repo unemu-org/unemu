@@ -528,7 +528,13 @@ impl PackageRom {
     /// The reviewed catalogue entry the ROM names, if any.
     pub fn entry(&self) -> Option<&'static assembly::FirmwareEntry> {
         let id = self.rom().ok()?.catalogue_id.as_deref()?;
-        crate::firmware::catalogue().iter().find(|e| e.id == id)
+        let fitted = Fit::decode(&self.package.config.fits)
+            .ok()?
+            .catalogue(crate::firmware::catalogue())
+            .ok()?;
+        crate::firmware::catalogue()
+            .iter()
+            .find(|e| e.id == id && fitted.contains(e))
     }
     fn names(&self, index: usize) -> Result<Vec<(String, Digest)>> {
         let rom = self.rom()?;

@@ -237,7 +237,63 @@ impl VolumeProfile for FatVolume {
     }
 }
 
+struct PackageFirmware(Vec<assembly::FirmwareEntry>);
+
+impl FirmwareProfile for PackageFirmware {
+    fn roles(&self) -> &[&str] {
+        PcRecipes.roles()
+    }
+    fn lanes(&self) -> &[&str] {
+        PcRecipes.lanes()
+    }
+    fn boards(&self) -> &[&str] {
+        PcRecipes.boards()
+    }
+    fn machine_classes(&self) -> &[&str] {
+        PcRecipes.machine_classes()
+    }
+    fn entry(&self, id: &str) -> Option<CatalogueEntry> {
+        self.0.iter().find(|e| e.id == id).map(catalogue_entry)
+    }
+    fn identify(&self, sha256: &str, size: u64) -> Option<(String, CatalogueEntry)> {
+        identify(&self.0, sha256, size)
+    }
+}
+
+fn identify(
+    catalogue: &[assembly::FirmwareEntry],
+    sha256: &str,
+    size: u64,
+) -> Option<(String, CatalogueEntry)> {
+    let entry = catalogue.iter().find(|e| {
+        e.sha256 == sha256
+            || e.parts
+                .iter()
+                .flat_map(|layout| layout.iter())
+                .any(|chip| chip.sha256 == sha256 && chip.size == size)
+    })?;
+    Some((entry.id.to_owned(), catalogue_entry(entry)))
+}
+
 impl FirmwareProfile for PcRecipes {
+    fn for_package(
+        &self,
+        package: Option<&recipe::model::Package>,
+    ) -> Option<Box<dyn FirmwareProfile + '_>> {
+        let fit = crate::firmware::Fit {
+            boards: package
+                .map(|p| p.boards.iter().map(|b| b.value.clone()).collect())
+                .unwrap_or_default(),
+            machine_classes: package
+                .map(|p| p.machine_classes.iter().map(|c| c.value.clone()).collect())
+                .unwrap_or_default(),
+        };
+        Some(Box::new(PackageFirmware(
+            fit.catalogue(crate::firmware::catalogue())
+                .unwrap_or_default(),
+        )))
+    }
+
     /// The README `image firmware import` generates.
     fn readme(
         &self,
@@ -263,14 +319,7 @@ impl FirmwareProfile for PcRecipes {
         Some(catalogue_entry(entry))
     }
     fn identify(&self, sha256: &str, size: u64) -> Option<(String, CatalogueEntry)> {
-        let entry = crate::firmware::catalogue().iter().find(|e| {
-            e.sha256 == sha256
-                || e.parts
-                    .iter()
-                    .flat_map(|layout| layout.iter())
-                    .any(|chip| chip.sha256 == sha256 && chip.size == size)
-        })?;
-        Some((entry.id.to_owned(), catalogue_entry(entry)))
+        identify(crate::firmware::catalogue(), sha256, size)
     }
 }
 

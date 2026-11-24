@@ -652,3 +652,107 @@ fn the_merged_corpus_records_round_trip_through_schema_2_metadata() {
         assert_eq!(decoded.encode(&[]).unwrap(), bytes, "{recipe}");
     }
 }
+
+fn catalogue_recipe(boards: &[&str], entries: &[assembly::FirmwareEntry]) -> String {
+    let mut text = format!(
+        "recipe = \"1.0\"\n[firmware]\nname = \"private/firmware/ibm-pc/catalogue-test\"\nplatform = \"ibm-pc\"\nrevision = 1\n[package]\ntitle = \"Catalogue test\"\n[package.fits]\nboards = {boards:?}\n"
+    );
+    for (index, entry) in entries.iter().enumerate() {
+        text.push_str(&format!(
+            "\n[input.rom{index}]\nname = \"rom{index}.bin\"\nsize = {}\nsha256 = {:?}\n[[rom]]\nid = \"rom{index}\"\nrole = {:?}\ncatalogue_id = {:?}\nfrom = \"rom{index}\"\n",
+            entry.size, entry.sha256, pc_image::firmware::role(entry.kind), entry.id
+        ));
+    }
+    text
+}
+
+#[test]
+fn generic_isa_firmware_catalogues_check_without_rom_bytes() {
+    let entries = assembly::BoardModel::Generic386Isa.firmware_catalogue();
+    assert_eq!(entries.len(), 2);
+    let text = catalogue_recipe(&["generic-386-isa", "generic-486-isa"], entries);
+    let report = generated("generic-isa.firmware.toml", &text);
+    assert!(report.findings.is_empty(), "{:#?}", report.findings);
+}
+
+#[test]
+fn firmware_ids_must_belong_to_a_fitted_board() {
+    let entries = assembly::BoardModel::Generic386Isa.firmware_catalogue();
+    let text = catalogue_recipe(&["ibm-5170"], entries);
+    let report = generated("wrong-board.firmware.toml", &text);
+    assert_eq!(report.findings.len(), 2, "{:#?}", report.findings);
+    assert!(report
+        .findings
+        .iter()
+        .all(|f| f.rule == recipe::Rule::Provider));
+    let text = catalogue_recipe(
+        &["generic-386-isa"],
+        &assembly::BoardModel::Ibm5170.firmware_catalogue()[..1],
+    );
+    let report = generated("wrong-generic-board.firmware.toml", &text);
+    assert_eq!(report.findings.len(), 1, "{:#?}", report.findings);
+    assert_eq!(report.findings[0].rule, recipe::Rule::Provider);
+}
+
+#[test]
+fn ibm_firmware_catalogue_keeps_its_static_checks() {
+    let text = catalogue_recipe(
+        &["ibm-5170"],
+        &assembly::BoardModel::Ibm5170.firmware_catalogue()[..1],
+    );
+    let report = generated("ibm-catalogue.firmware.toml", &text);
+    assert!(report.findings.is_empty(), "{:#?}", report.findings);
+}
+
+#[test]
+fn unknown_firmware_id_is_refused_for_generic_boards() {
+    let mut entry = assembly::BoardModel::Generic386Isa.firmware_catalogue()[0];
+    entry.id = "unknown-firmware";
+    let text = catalogue_recipe(&["generic-386-isa", "generic-486-isa"], &[entry]);
+    let report = generated("unknown-generic.firmware.toml", &text);
+    assert_eq!(report.findings.len(), 1, "{:#?}", report.findings);
+    assert_eq!(report.findings[0].rule, recipe::Rule::Provider);
+}
+
+#[test]
+fn firmware_machine_class_uses_its_board_catalogue() {
+    let entries = &assembly::BoardModel::Ibm5170.firmware_catalogue()[..1];
+    let text = catalogue_recipe(&[], entries).replace("boards = []", "machine_classes = [\"at\"]");
+    let report = generated("at-catalogue.firmware.toml", &text);
+    assert!(report.findings.is_empty(), "{:#?}", report.findings);
+    let text = text.replace("machine_classes = [\"at\"]", "machine_classes = [\"xt\"]");
+    let report = generated("xt-catalogue.firmware.toml", &text);
+    assert_eq!(report.findings.len(), 1, "{:#?}", report.findings);
+    assert_eq!(report.findings[0].rule, recipe::Rule::Provider);
+}
+
+#[test]
+fn fitted_catalogue_supplies_rom_sizes_hashes_and_licences() {
+    let mut entries = assembly::BoardModel::Generic386Isa
+        .firmware_catalogue()
+        .to_vec();
+    for entry in &mut entries {
+        entry.size += 1;
+        entry.sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    }
+    let mut text = catalogue_recipe(&["generic-386-isa", "generic-486-isa"], &entries);
+    text.push_str("\n[license]\nexpression = \"MIT\"\n");
+    let report = generated("generic-catalogue-metadata.firmware.toml", &text);
+    assert_eq!(report.findings.len(), 6, "{:#?}", report.findings);
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(|f| f.rule == recipe::Rule::License)
+            .count(),
+        2
+    );
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(|f| f.rule == recipe::Rule::Platform)
+            .count(),
+        4
+    );
+}

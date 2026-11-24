@@ -28,13 +28,18 @@ pub const BOARDS: &[&str] = &[
     "compaq-deskpro",
     "tandy-1000",
     "generic-386-isa",
+    "generic-486-isa",
     "i440fx-piix3",
     "i440bx-piix4",
 ];
 /// Hardware families are provider vocabulary, independently of executable support.
 pub const MACHINE_CLASSES: &[&str] = &["at", "xt"];
-/// Executable boards whose machine class the provider can name.
-const EXECUTABLE_BOARDS: &[assembly::BoardModel] = &[assembly::BoardModel::Ibm5170];
+/// Executable boards with production firmware catalogues.
+pub(crate) const EXECUTABLE_BOARDS: &[assembly::BoardModel] = &[
+    assembly::BoardModel::Ibm5170,
+    assembly::BoardModel::Generic386Isa,
+    assembly::BoardModel::Generic486Isa,
+];
 fn model_class(model: assembly::BoardModel) -> Option<&'static str> {
     match model.class() {
         Some(assembly::MachineClass::At) => Some("at"),
@@ -65,6 +70,45 @@ impl Fit {
     }
     pub fn table(&self) -> Result<toml::Table> {
         toml::Table::try_from(self).map_err(|e| invalid(e.to_string()))
+    }
+
+    /// Select entries owned by a fitted board, refusing ambiguous metadata.
+    pub fn catalogue(&self, catalogue: &[FirmwareEntry]) -> Result<Vec<FirmwareEntry>> {
+        let default_board = self.boards.is_empty() && self.machine_classes.is_empty();
+        let fits = |board: &str| {
+            (default_board && board == "ibm-5170")
+                || self.boards.iter().any(|b| b == board)
+                || board_class(board)
+                    .is_some_and(|class| self.machine_classes.iter().any(|c| c == class))
+        };
+        let mut selected: Vec<FirmwareEntry> = Vec::new();
+        for entry in catalogue {
+            let owners: Vec<_> = EXECUTABLE_BOARDS
+                .iter()
+                .filter(|board| board.firmware_catalogue().contains(entry))
+                .collect();
+            // Reserved boards and injected test catalogues retain their declared fits.
+            let matches = owners.iter().any(|board| fits(board.id()))
+                || entry.boards.iter().any(|board| {
+                    fits(board)
+                        && (owners.is_empty()
+                            || !EXECUTABLE_BOARDS.iter().any(|b| b.id() == *board))
+                });
+            if !matches {
+                continue;
+            }
+            if let Some(previous) = selected.iter().find(|e| e.id == entry.id) {
+                if previous != entry {
+                    return Err(invalid(format!(
+                        "fitted boards disagree about firmware catalogue id {}",
+                        entry.id
+                    )));
+                }
+            } else {
+                selected.push(*entry);
+            }
+        }
+        Ok(selected)
     }
 }
 fn invalid(s: impl Into<String>) -> Error {
@@ -128,6 +172,7 @@ impl FirmwareRules for PcFirmwareRules<'_> {
         descriptors: &[Descriptor],
     ) -> Result<()> {
         let fit = Fit::decode(&config.fits)?;
+        let catalogue = fit.catalogue(self.0)?;
         let mut unique = std::collections::BTreeSet::new();
         for board in &fit.boards {
             if !unique.insert(board)
@@ -161,24 +206,13 @@ impl FirmwareRules for PcFirmwareRules<'_> {
                 return Err(invalid("assembled firmware identity mismatch"));
             }
             if let Some(id) = &rom.catalogue_id {
-                let entry = self
-                    .0
+                let entry = catalogue
                     .iter()
                     .find(|e| e.id == id)
                     .ok_or_else(|| invalid("unknown firmware catalogue id"))?;
                 if role(entry.kind) != rom.role
                     || entry.sha256 != rom.sha256
                     || entry.size != rom.size
-                    || fit
-                        .boards
-                        .iter()
-                        .any(|b| !entry.boards.contains(&b.as_str()))
-                    || fit.machine_classes.iter().any(|class| {
-                        !entry
-                            .boards
-                            .iter()
-                            .any(|board| board_class(board) == Some(class.as_str()))
-                    })
                 {
                     return Err(invalid("firmware catalogue identity, role or fit mismatch"));
                 }
