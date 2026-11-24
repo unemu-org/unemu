@@ -254,8 +254,7 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    Templates move to `machines/`. The repositories `unemu/open-at` and
    `unemu/open-at-games` keep their `1.2.0` templates and receive nothing
    new; `1.3.0` is published as `unemu/machines/ibm-pc/open-at` and
-   `unemu/machines/ibm-pc/open-at-games`. The move is announced, since the
-   old repositories' `latest` stays at `1.2.0`.
+   `unemu/machines/ibm-pc/open-at-games`.
    Outputs keep SemVer and the guarded `latest` policy. Recipe tags match
    immutable output tags and have no `latest`. Published 1.0 recipes stay at
    1.0: no same-output tag replacement with 1.1.
