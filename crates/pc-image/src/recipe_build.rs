@@ -59,7 +59,10 @@ impl Publisher for PcPublisher {
             .map_err(|e| e.to_string())?
             .artifact_type()
             .to_owned();
-        if kind == image_store::media_type::FIRMWARE {
+        if kind == image_store::media_type::MACHINE {
+            crate::recipe::template_facts::tag_locked(store, reference, manifest)
+                .map_err(|e| e.to_string())
+        } else if kind == image_store::media_type::FIRMWARE {
             let rules = crate::firmware::PcFirmwareRules(crate::firmware::catalogue());
             recipe::lock::tag(
                 store,

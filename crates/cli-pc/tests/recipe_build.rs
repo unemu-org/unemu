@@ -1545,16 +1545,36 @@ fn machine_draft_cli_builds_and_tags_portable_config_without_guest_execution() {
     let (code, output, errors) = upcli(&words(&t, &path, &[]));
     assert_eq!(code, 0, "{output}{errors}");
     assert!(output.contains("already built"), "{output}");
-    let text = fs::read_to_string(&path).unwrap().replace(
-        "version = \"1.3.0\"",
-        &format!("version = \"1.3.0\"\ndigest = \"{}\"", image.image.digest),
-    );
-    fs::write(&path, text).unwrap();
+    let mut pin = words(&t, &path, &[]);
+    pin[1] = "pin".into();
+    let (code, output, errors) = upcli(&pin);
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(output.contains("3 files"), "{output}");
+    let pinned = fs::read_to_string(&path).unwrap();
+    assert!(pinned.contains(&format!(
+        "version = \"1.3.0\"\ndigest = \"{}\"",
+        image.image.digest
+    )));
+    assert!(!pinned.contains("revision"));
     let (code, output, errors) = upcli(&words(&t, &path, &[]));
-    assert_ne!(code, 0, "{output}{errors}");
-    assert!(
-        format!("{output}{errors}").contains("pinned machine recipes require machine lock support"),
-        "{output}{errors}"
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(output.contains("locked"), "{output}");
+    let (code, output, errors) = upcli(&words(&t, &path, &["--keep-as", "1.3.0-copy"]));
+    assert_eq!(code, 0, "{output}{errors}");
+    assert_eq!(
+        store
+            .tag_descriptor("private/machines/ibm-pc/bound:1.3.0-copy")
+            .unwrap()
+            .digest,
+        image.image.digest
+    );
+    let before = recipe::lock::read(&recipe::lock::dir(&path)).unwrap();
+    let (code, _, _) = upcli(&pin);
+    assert_ne!(code, 0);
+    assert_eq!(fs::read_to_string(&path).unwrap(), pinned);
+    assert_eq!(
+        recipe::lock::read(&recipe::lock::dir(&path)).unwrap(),
+        before
     );
     assert_eq!(
         store
@@ -1563,4 +1583,47 @@ fn machine_draft_cli_builds_and_tags_portable_config_without_guest_execution() {
             .digest,
         image.image.digest
     );
+}
+
+#[test]
+fn machine_pin_lock_write_failure_leaves_no_output_tag() {
+    for source in &pc_image::template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            if pc_harness::test_support::fixtures::fixture(relative).is_none() {
+                return;
+            }
+        }
+    }
+    let t = Temp::new("machine-pin-failure");
+    let store = image_store::Store::open(t.path("store"))
+        .unwrap()
+        .with_compatibility(pc_image::compat::compatibility(
+            pc_image::compat::NEXT_RELEASE,
+        ));
+    let path = template_support::template_recipe(&store, &t.0);
+    let before = fs::read(&path).unwrap();
+    let lock = recipe::lock::dir(&path);
+    fs::create_dir_all(lock.join("sha256")).unwrap();
+    let mut backup = lock.as_os_str().to_owned();
+    backup.push(format!(".pin-{}", std::process::id()));
+    let backup = PathBuf::from(backup);
+    fs::create_dir_all(&backup).unwrap();
+    fs::write(backup.join("occupied"), b"keep").unwrap();
+    let mut args = words(&t, &path, &[]);
+    args[1] = "pin".into();
+    let (code, output, errors) = upcli(&args);
+    assert_ne!(code, 0, "{output}{errors}");
+    assert!(store
+        .tag_descriptor("private/machines/ibm-pc/bound:1.3.0")
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(lock.join("sha256").is_dir());
+    assert_eq!(fs::read(backup.join("occupied")).unwrap(), b"keep");
+    fs::remove_dir_all(&backup).unwrap();
+    let (code, output, errors) = upcli(&args);
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(store
+        .tag_descriptor("private/machines/ibm-pc/bound:1.3.0")
+        .is_ok());
+    assert_eq!(recipe::lock::read(&lock).unwrap().len(), 3);
 }

@@ -79,15 +79,22 @@ impl Provider for PcRecipes {
         Ok(pc_config::launch::MEDIA_TYPE)
     }
 
-    fn publish_template(
+    fn template_manifest(
         &self,
         store: &image_store::Store,
         recipe: &recipe::model::Recipe,
         prepared: &unemu_core_api::PreparedConfig,
         slots: &[unemu_core_api::BindingSlot],
         facts: &recipe::template::Facts,
-    ) -> Result<recipe::build::Published, String> {
-        template_facts::publish(store, recipe, prepared, slots, facts).map_err(|e| e.to_string())
+        locked: Option<&recipe::lock::Locked>,
+    ) -> Result<(image_store::Manifest, image_store::Descriptor), String> {
+        use image_store::ConfigValidator;
+        let manifest = template_facts::construct(store, recipe, prepared, slots, facts, locked)
+            .map_err(|e| e.to_string())?;
+        let descriptor = store
+            .import_manifest_with_types(&manifest, crate::PcProvider.payload_types())
+            .map_err(|e| e.to_string())?;
+        Ok((manifest, descriptor))
     }
 
     fn core_platform_release(

@@ -10,7 +10,8 @@
 //! artifact laid out in a scratch folder; then the tag rule of recipes §7.3:
 //! a recipe tag that names another manifest moves only to a recipe that
 //! pins the same output digest (`unemu.recipe.output.digest`), without
-//! `--move`, and is refused otherwise, whatever the options say. The parts
+//! `--move`, and is refused otherwise, whatever the options say. A published
+//! 1.0 recipe keeps its grammar at that output tag; a newer version needs a new output tag. The parts
 //! are staged in the store as untagged blobs and uploaded by the push code
 //! of [`crate::push`], which publishes the manifest last after checking
 //! that the tag did not change meanwhile.
@@ -179,6 +180,18 @@ pub fn push(
                     wanted,
                 });
             }
+            if recipe_version(&artifact.config).as_deref() != Some("1.0") {
+                store
+                    .compatibility()
+                    .check(&current.bytes, &target.to_string())?;
+                let current_manifest = Manifest::decode(&current.bytes)?;
+                let config = client.small_blob(repository, &current_manifest.config)?;
+                if recipe_version(&config).as_deref() == Some("1.0") {
+                    return Err(Error::Config(
+                        "a published recipe 1.0 cannot be replaced by a newer recipe version at the same output tag; publish a new output version or revision".into(),
+                    ));
+                }
+            }
             TagOutcome::Moved {
                 from: current.digest.clone(),
             }
@@ -207,6 +220,12 @@ pub fn push(
     push::finish(store, &plan, client, options, &mut watch, tag, preflight)
 }
 
+fn recipe_version(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let table: toml::Table = toml::from_str(text).ok()?;
+    table.get("recipe")?.as_str().map(str::to_owned)
+}
+
 /// What a pull wrote.
 #[derive(Debug)]
 pub struct Pulled {
@@ -222,6 +241,11 @@ fn recipe_manifest(
     source: &Reference,
     compatibility: &image_store::compat::Compatibility,
 ) -> Result<(Vec<u8>, Manifest)> {
+    if source.tag.as_deref() == Some("latest") {
+        return Err(Error::Reference(
+            "recipe artifacts have no latest tag".into(),
+        ));
+    }
     let fetched = client
         .manifest(&source.repository, &source.manifest_reference())?
         .ok_or_else(|| Error::NotFound(source.to_string()))?;
@@ -415,4 +439,440 @@ fn historical_compatibility(providers: Providers<'_>) -> image_store::compat::Co
         Compatibility::new(EXTRACTION_BASELINE, BASELINE),
         |runtime, platform| runtime.with_core(platform, EXTRACTION_BASELINE, BASELINE),
     )
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use super::*;
+    use crate::http::{Body, Method, Response, Transport};
+    use ::recipe::provider::{
+        CatalogueEntry, FirmwareProfile, MediaProfile, Provider, VolumeProfile,
+    };
+    use image_store::compat::{Compatibility, BASELINE, NEXT_RELEASE};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    struct Empty;
+    impl Provider for Empty {
+        fn platform(&self) -> &str {
+            "synthetic"
+        }
+        fn media(&self) -> &dyn MediaProfile {
+            self
+        }
+        fn firmware(&self) -> &dyn FirmwareProfile {
+            self
+        }
+        fn needs(&self) -> Option<&dyn image_store::needs::Vocabulary> {
+            None
+        }
+        fn software_platforms(&self) -> &[&str] {
+            &[]
+        }
+        fn work_id_catalogues(&self) -> &[&str] {
+            &[]
+        }
+    }
+    impl MediaProfile for Empty {
+        fn formats(&self) -> &[&str] {
+            &["720K"]
+        }
+        fn format_name(&self, _: &toml::Table) -> Option<String> {
+            Some("720K".into())
+        }
+        fn size_fault(&self, _: &str, _: u64) -> Option<String> {
+            None
+        }
+        fn volume_profile(&self, _: &str) -> Option<&dyn VolumeProfile> {
+            None
+        }
+        fn dos_name_fault(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+    impl FirmwareProfile for Empty {
+        fn roles(&self) -> &[&str] {
+            &[]
+        }
+        fn lanes(&self) -> &[&str] {
+            &[]
+        }
+        fn boards(&self) -> &[&str] {
+            &[]
+        }
+        fn machine_classes(&self) -> &[&str] {
+            &[]
+        }
+        fn entry(&self, _: &str) -> Option<CatalogueEntry> {
+            None
+        }
+        fn identify(&self, _: &str, _: u64) -> Option<(String, CatalogueEntry)> {
+            None
+        }
+    }
+    #[derive(Default)]
+    struct Remote {
+        manifest: Option<Vec<u8>>,
+        blobs: BTreeMap<String, Vec<u8>>,
+        requests: Vec<String>,
+    }
+    struct Memory(Arc<Mutex<Remote>>);
+    impl Transport for Memory {
+        fn send(
+            &self,
+            method: Method,
+            url: &str,
+            _: &[(&str, String)],
+            body: &Body<'_>,
+        ) -> std::io::Result<Response> {
+            let mut remote = self.0.lock().unwrap();
+            remote.requests.push(format!("{} {url}", method.as_str()));
+            if url.contains("/manifests/") {
+                if method == Method::Put {
+                    let Body::Bytes(bytes) = body else {
+                        panic!("manifest body must be bytes")
+                    };
+                    remote.manifest = Some(bytes.to_vec());
+                    let mut response = Response::manifest_bytes(url, Vec::new());
+                    response.status = 201;
+                    return Ok(response);
+                }
+                if method == Method::Head {
+                    let bytes = remote.manifest.as_deref().unwrap_or_default();
+                    let mut response = Response::manifest_head(url, &Digest::of(bytes));
+                    if remote.manifest.is_none() {
+                        response.status = 404;
+                    }
+                    return Ok(response);
+                }
+                assert_eq!(method, Method::Get);
+                let mut response =
+                    Response::manifest_bytes(url, remote.manifest.clone().unwrap_or_default());
+                if remote.manifest.is_none() {
+                    response.status = 404;
+                }
+                return Ok(response);
+            }
+            let digest = url.rsplit('/').next().unwrap();
+            let bytes = remote
+                .blobs
+                .get(digest)
+                .expect("only bundled parts may be requested");
+            if method == Method::Head {
+                return Ok(Response::manifest_head(url, &digest.parse().unwrap()));
+            }
+            assert_eq!(method, Method::Get);
+            Ok(Response::manifest_bytes(url, bytes.clone()))
+        }
+    }
+
+    #[test]
+    fn machine_recipe_bundle_push_pull_inspect_and_tag_guards_round_trip() {
+        let temp = image_store::test_support::TempDir::new("machine-recipe-registry");
+        let runtime = Compatibility::new(NEXT_RELEASE, NEXT_RELEASE).with_core(
+            "synthetic",
+            BASELINE,
+            BASELINE,
+        );
+        let store = Store::open(temp.path().join("store"))
+            .unwrap()
+            .with_compatibility(runtime.clone());
+        let marked = |kind: &str, bytes: &[u8]| {
+            let mut d = Descriptor::new(kind, Digest::of(bytes), bytes.len() as u64);
+            image_store::license::mark(
+                &mut d,
+                Some(&image_store::license::Expression::parse("CC0-1.0").unwrap()),
+            );
+            d
+        };
+        let input = b"bound=1\n";
+        let config = b"schema=1\n";
+        let metadata = image_store::metadata::Metadata::new("synthetic")
+            .encode(&[])
+            .unwrap();
+        let mut output = Manifest::new(
+            "synthetic",
+            marked(media_type::CONFIG, config),
+            vec![marked(media_type::METADATA, &metadata)],
+        )
+        .unwrap();
+        output
+            .annotations
+            .insert("unemu.template.uses".into(), String::new());
+        let manifest = output.encode().unwrap();
+        let digest = Digest::of(&manifest);
+        let path = temp.path().join("demo.machine.toml");
+        let recipe = format!("recipe='1.1'\n[machine]\nname='unemu/team/machines/synthetic/demo'\nplatform='synthetic'\nversion='1.0.0'\ndigest='{digest}'\n[template]\nconfig='config'\n[license]\nexpression='CC0-1.0'\n[input.config]\nname='config.toml'\nsize={}\nsha256='{}'\nbundle=true\n", input.len(), Digest::of(input).hex());
+        std::fs::write(&path, recipe).unwrap();
+        std::fs::write(temp.path().join("config.toml"), input).unwrap();
+        ::recipe::lock::write(
+            &::recipe::lock::dir(&path),
+            &[manifest, config.to_vec(), metadata],
+        )
+        .unwrap();
+        let providers = Providers(&[&Empty]);
+        let artifact =
+            artifact::bundle_with_levels(&path, providers, runtime.levels("synthetic")).unwrap();
+        let target = Reference::parse(
+            "registry.example/unemu/team/recipes/machines/synthetic/demo:1.0.0",
+            "registry.example",
+        )
+        .unwrap();
+        let entry = RegistryEntry::builtin("registry.example");
+        let remote = Arc::new(Mutex::new(Remote::default()));
+        for (d, bytes) in std::iter::once((&artifact.manifest.config, artifact.config.as_slice()))
+            .chain(artifact.parts())
+        {
+            remote
+                .lock()
+                .unwrap()
+                .blobs
+                .insert(d.digest.to_string(), bytes.to_vec());
+        }
+        let client =
+            Client::for_test_transport("registry.example", Box::new(Memory(remote.clone())));
+        let report = push(
+            &store,
+            &artifact,
+            &target,
+            Some(&entry),
+            providers,
+            &client,
+            &PushOptions::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(report.tag, TagOutcome::Created);
+        assert_eq!(
+            remote.lock().unwrap().manifest.as_ref().unwrap(),
+            &artifact.manifest_bytes
+        );
+        let pulled = pull_with_compatibility(
+            &client,
+            &target,
+            &temp.path().join("pull"),
+            providers,
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(pulled.artifact, artifact);
+        let repeated = push(
+            &store,
+            &artifact,
+            &target,
+            Some(&entry),
+            providers,
+            &client,
+            &PushOptions::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(repeated.tag, TagOutcome::Unchanged);
+        let mut changed = artifact.manifest.clone();
+        changed.annotations.insert(
+            artifact::OUTPUT_DIGEST.into(),
+            format!("sha256:{}", "0".repeat(64)),
+        );
+        remote.lock().unwrap().manifest = Some(changed.encode().unwrap());
+        let before = remote.lock().unwrap().requests.len();
+        let error = push(
+            &store,
+            &artifact,
+            &target,
+            Some(&entry),
+            providers,
+            &client,
+            &PushOptions {
+                allow_move: true,
+                ..PushOptions::default()
+            },
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::RecipeTagTaken { .. }));
+        assert_eq!(remote.lock().unwrap().requests.len(), before + 1);
+        let latest = Reference::parse(
+            "registry.example/unemu/team/recipes/machines/synthetic/demo:latest",
+            "registry.example",
+        )
+        .unwrap();
+        let before = remote.lock().unwrap().requests.len();
+        assert!(push(
+            &store,
+            &artifact,
+            &latest,
+            Some(&entry),
+            providers,
+            &client,
+            &PushOptions::default(),
+            &mut |_, _| {}
+        )
+        .is_err());
+        assert_eq!(remote.lock().unwrap().requests.len(), before);
+    }
+    #[test]
+    fn a_published_recipe_keeps_version_one_zero_at_its_existing_output_tag() {
+        let temp = image_store::test_support::TempDir::new("recipe-version-guard");
+        let runtime = Compatibility::new(NEXT_RELEASE, NEXT_RELEASE).with_core(
+            "synthetic",
+            BASELINE,
+            BASELINE,
+        );
+        let store = Store::open(temp.path().join("store"))
+            .unwrap()
+            .with_compatibility(runtime.clone());
+        let payload = b"x";
+        let mut medium = Descriptor::new(media_type::FLOPPY, Digest::of(payload), 1);
+        medium
+            .annotations
+            .insert(image_store::export_name::TITLE.into(), "disk.txt".into());
+        let config = image_store::media_set::Config {
+            schema: 1,
+            platform: "synthetic".into(),
+            media: vec![image_store::media_set::Medium {
+                id: "disk-1".into(),
+                label: "Disk 1".into(),
+                format: toml::from_str("kind='synthetic'").unwrap(),
+                blob: medium.digest.clone(),
+            }],
+            extras: Vec::new(),
+        }
+        .encode()
+        .unwrap();
+        let mut metadata = image_store::metadata::Metadata::new("synthetic");
+        metadata
+            .titles
+            .push(serde_json::from_str(r#"{"id":"demo","title":"Demo"}"#).unwrap());
+        let metadata = metadata.encode(&[]).unwrap();
+        let output = Manifest::new_media_set(
+            "synthetic",
+            Descriptor::new(
+                media_type::MEDIA_SET_CONFIG,
+                Digest::of(&config),
+                config.len() as u64,
+            ),
+            vec![
+                medium,
+                Descriptor::new(
+                    media_type::METADATA,
+                    Digest::of(&metadata),
+                    metadata.len() as u64,
+                ),
+            ],
+        )
+        .unwrap();
+        let manifest = output.encode().unwrap();
+        let digest = Digest::of(&manifest);
+        let path = temp.path().join("demo.media.toml");
+        let text = format!("recipe='1.0'\n[media]\nname='team/media/synthetic/demo'\nplatform='synthetic'\nrevision=1\ndigest='{digest}'\n[title]\ntitle='Demo'\n[input.disk]\nname='disk.txt'\nsize=1\nsha256='{}'\nbundle=true\ndisclosable=true\n[[medium]]\nid='disk-1'\nlabel='Disk 1'\nformat='720K'\nfile_name='disk.txt'\nfrom='disk'\n", Digest::of(payload).hex());
+        std::fs::write(&path, &text).unwrap();
+        std::fs::write(temp.path().join("disk.txt"), payload).unwrap();
+        ::recipe::lock::write(&::recipe::lock::dir(&path), &[manifest, config, metadata]).unwrap();
+        let providers = Providers(&[&Empty]);
+        let old =
+            artifact::bundle_with_levels(&path, providers, runtime.levels("synthetic")).unwrap();
+        std::fs::write(&path, text.replace("recipe='1.0'", "recipe='1.1'")).unwrap();
+        let new =
+            artifact::bundle_with_levels(&path, providers, runtime.levels("synthetic")).unwrap();
+        assert_eq!(old.output_digest(), new.output_digest());
+        let remote = Arc::new(Mutex::new(Remote::default()));
+        remote.lock().unwrap().manifest = Some(old.manifest_bytes.clone());
+        for artifact in [&old, &new] {
+            for (d, bytes) in
+                std::iter::once((&artifact.manifest.config, artifact.config.as_slice()))
+                    .chain(artifact.parts())
+            {
+                remote
+                    .lock()
+                    .unwrap()
+                    .blobs
+                    .insert(d.digest.to_string(), bytes.to_vec());
+            }
+        }
+        let client =
+            Client::for_test_transport("registry.example", Box::new(Memory(remote.clone())));
+        let entry = RegistryEntry::builtin("registry.example");
+        let target = Reference::parse(
+            "registry.example/team/recipes/media/synthetic/demo:r1",
+            "registry.example",
+        )
+        .unwrap();
+        for key in [
+            image_store::compat::MIN_APP_VERSION,
+            image_store::compat::MIN_FRONTEND_VERSION,
+        ] {
+            let mut future = old.manifest.clone();
+            future.annotations.insert(key.into(), "99.0.0".into());
+            remote.lock().unwrap().manifest = Some(future.encode().unwrap());
+            remote.lock().unwrap().requests.clear();
+            let error = push(
+                &store,
+                &new,
+                &target,
+                Some(&entry),
+                providers,
+                &client,
+                &PushOptions::default(),
+                &mut |_, _| {},
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("99.0.0"), "{error}");
+            assert_eq!(remote.lock().unwrap().requests.len(), 1);
+        }
+        remote.lock().unwrap().manifest = Some(old.manifest_bytes.clone());
+        remote.lock().unwrap().requests.clear();
+        let error = push(
+            &store,
+            &new,
+            &target,
+            Some(&entry),
+            providers,
+            &client,
+            &PushOptions {
+                allow_move: true,
+                ..PushOptions::default()
+            },
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("published recipe 1.0"),
+            "{error}"
+        );
+        assert_eq!(
+            remote.lock().unwrap().manifest.as_ref().unwrap(),
+            &old.manifest_bytes
+        );
+        assert!(!remote
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .any(|request| request.starts_with("PUT ")));
+        assert_eq!(remote.lock().unwrap().requests.len(), 2);
+        remote.lock().unwrap().manifest = Some(new.manifest_bytes.clone());
+        std::fs::write(
+            &path,
+            "# own publication note\n".to_owned() + &text.replace("recipe='1.0'", "recipe='1.1'"),
+        )
+        .unwrap();
+        let updated =
+            artifact::bundle_with_levels(&path, providers, runtime.levels("synthetic")).unwrap();
+        remote.lock().unwrap().blobs.insert(
+            updated.manifest.config.digest.to_string(),
+            updated.config.clone(),
+        );
+        let report = push(
+            &store,
+            &updated,
+            &target,
+            Some(&entry),
+            providers,
+            &client,
+            &PushOptions::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(report.tag, TagOutcome::Moved { from: new.digest });
+    }
 }

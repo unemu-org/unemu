@@ -193,14 +193,15 @@ impl ContentReader for Reader {
 }
 
 /// Package a composed document without rebuilding or re-encoding its config.
-pub fn publish(
+pub fn construct(
     store: &Store,
     recipe: &recipe::model::Recipe,
     prepared: &unemu_core_api::PreparedConfig,
     slots: &[unemu_core_api::BindingSlot],
     facts: &recipe::template::Facts,
-) -> crate::Result<recipe::build::Published> {
-    use image_store::{license, media_type as mt, ConfigValidator, Descriptor, Manifest};
+    locked: Option<&recipe::lock::Locked>,
+) -> crate::Result<image_store::Manifest> {
+    use image_store::{license, media_type as mt, Descriptor, Manifest};
     use unemu_core_api::ContentReader;
     let generated = |descriptor| -> crate::Result<Descriptor> {
         let mut descriptor = crate::generated(descriptor);
@@ -224,6 +225,7 @@ pub fn publish(
         Ok(())
     };
     let mut provenance = BTreeMap::new();
+    let mut inherited = image_store::compat::BASELINE;
     let mut firmware_sources = std::collections::BTreeSet::new();
     for usage in &recipe.uses {
         let usage = UsePlan {
@@ -261,6 +263,8 @@ pub fn publish(
         );
         let package = if image.manifest.artifact_type() == mt::FIRMWARE {
             firmware_sources.insert(usage.digest.clone());
+            inherited =
+                inherited.max(image_store::compat::Requirement::of(&image.manifest).release()?);
             Some(firmware::Config::decode(&image.config)?)
         } else {
             None
@@ -423,6 +427,42 @@ pub fn publish(
         "unemu.template.uses".into(),
         toml::to_string(&provenance).map_err(|e| crate::invalid(e.to_string()))?,
     );
+    let stated = recipe
+        .identity
+        .min_app_version
+        .as_ref()
+        .map(|v| v.value.parse())
+        .transpose()?;
+    if let Some(locked) = locked {
+        for key in [
+            image_store::compat::MIN_APP_VERSION,
+            image_store::compat::MIN_FRONTEND_VERSION,
+        ] {
+            if let Some(value) = locked.manifest.annotations.get(key) {
+                manifest.annotations.insert(key.into(), value.clone());
+            }
+        }
+    } else {
+        crate::compat::stamp(
+            &mut manifest,
+            &config.bytes,
+            inherited,
+            stated,
+            crate::compat::source_levels(store),
+        )?;
+    }
+    Ok(manifest)
+}
+
+/// Package and publish a composed document without guest execution.
+pub fn publish(
+    store: &Store,
+    recipe: &recipe::model::Recipe,
+    prepared: &unemu_core_api::PreparedConfig,
+    slots: &[unemu_core_api::BindingSlot],
+    facts: &recipe::template::Facts,
+) -> crate::Result<recipe::build::Published> {
+    let manifest = construct(store, recipe, prepared, slots, facts, None)?;
     let reference = format!(
         "{}:{}",
         recipe
@@ -438,26 +478,51 @@ pub fn publish(
             .map(|v| v.value.as_str())
             .unwrap_or_default()
     );
+    tag(store, &reference, &manifest)
+}
+
+/// Official templates must satisfy the publication rules before a tag exists.
+pub fn tag(
+    store: &Store,
+    reference: &str,
+    manifest: &image_store::Manifest,
+) -> crate::Result<recipe::build::Published> {
+    use image_store::ConfigValidator;
+    official_guard(reference, manifest)?;
     let descriptor =
-        store.import_manifest_with_types(&manifest, crate::PcProvider.payload_types())?;
-    let created = match store.tag_descriptor(&reference) {
-        Ok(existing) if existing.digest == descriptor.digest => {
-            store.resolve_descriptor(&existing, &crate::PcProvider)?;
-            false
+        store.import_manifest_with_types(manifest, crate::PcProvider.payload_types())?;
+    tag_locked(store, reference, &descriptor)
+}
+
+/// Publish the exact locked manifest bytes after policy and closure verification.
+pub fn tag_locked(
+    store: &Store,
+    reference: &str,
+    descriptor: &image_store::Descriptor,
+) -> crate::Result<recipe::build::Published> {
+    use image_store::BlobSource;
+    let manifest = image_store::Manifest::decode_for_summary(
+        &store.read_verified(descriptor, image_store::MAX_SMALL_BLOB)?,
+    )?;
+    official_guard(reference, &manifest)?;
+    store.resolve_descriptor(descriptor, &crate::PcProvider)?;
+    recipe::lock::tag(store, reference, descriptor, &crate::PcProvider).map_err(crate::invalid)
+}
+
+fn official_guard(reference: &str, manifest: &image_store::Manifest) -> crate::Result<()> {
+    if reference.starts_with("unemu/") {
+        for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
+            if image_store::license::open_license(descriptor).is_none() {
+                return Err(crate::invalid(
+                    "official templates require every blob to be open",
+                ));
+            }
+            if image_store::license::source_missing(descriptor, &manifest.layers) {
+                return Err(crate::invalid(
+                    "official templates require corresponding source archives for copyleft content",
+                ));
+            }
         }
-        Ok(_) => {
-            return Err(crate::invalid(
-                "template version tag already names different content",
-            ))
-        }
-        Err(image_store::Error::TagNotFound(_)) => {
-            store.update_tag(&reference, &descriptor, None, &crate::PcProvider)?;
-            true
-        }
-        Err(error) => return Err(error.into()),
-    };
-    Ok(recipe::build::Published {
-        descriptor,
-        created,
-    })
+    }
+    Ok(())
 }

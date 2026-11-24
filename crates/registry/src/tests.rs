@@ -3438,3 +3438,124 @@ fn independent_component_floors_refuse_pull_before_strict_decode_or_any_blob_req
         assert_eq!(requests.load(Ordering::Relaxed), 2);
     }
 }
+
+#[test]
+fn machine_recipe_component_floors_refuse_pull_and_rows_before_payload_requests() {
+    use image_store::compat::{
+        AppVersion as V, Compatibility, MIN_APP_VERSION, MIN_FRONTEND_VERSION,
+    };
+    use std::sync::{atomic::AtomicUsize, Arc};
+    struct OnlyManifest {
+        bytes: Vec<u8>,
+        requests: Arc<AtomicUsize>,
+    }
+    impl crate::http::Transport for OnlyManifest {
+        fn send(
+            &self,
+            _: Method,
+            url: &str,
+            _: &[(&str, String)],
+            _: &Body<'_>,
+        ) -> std::io::Result<crate::http::Response> {
+            assert!(
+                url.contains("/manifests/"),
+                "unexpected payload request: {url}"
+            );
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::http::Response::manifest_bytes(
+                url,
+                self.bytes.clone(),
+            ))
+        }
+    }
+    let v = |patch| V::new(0, 0, patch);
+    let source = Reference::parse(
+        "registry.example/unemu/team/recipes/machines/synthetic/demo:1.0.0",
+        "registry.example",
+    )
+    .unwrap();
+    for (core, frontend, key, expected) in [
+        (3, 9, MIN_APP_VERSION, "unemupc"),
+        (9, 3, MIN_FRONTEND_VERSION, "front end"),
+    ] {
+        let runtime = Compatibility::new(v(frontend), v(1)).with_core("synthetic", v(core), v(1));
+        let mut m = Manifest::new_recipe(
+            "application/vnd.unemu.recipe.machine.v1",
+            "synthetic",
+            Descriptor::new(mt::RECIPE_CONFIG, Digest::of(b"config"), 6),
+            vec![],
+        )
+        .unwrap();
+        m.annotations.insert(key.into(), "0.0.7".into());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let client = Client::for_test_transport(
+            "registry.example",
+            Box::new(OnlyManifest {
+                bytes: m.encode().unwrap(),
+                requests: requests.clone(),
+            }),
+        );
+        let temp = Temp::new();
+        let error = crate::recipe::pull_with_compatibility(
+            &client,
+            &source,
+            &temp.0.join("pulled"),
+            ::recipe::Providers(&[]),
+            &runtime,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+        assert!(!temp.0.join("pulled").exists());
+        let row = crate::recipe::row_with_compatibility(
+            &client,
+            &source,
+            ::recipe::Providers(&[]),
+            ::recipe::plan::Sources {
+                store: None,
+                downloads: None,
+                libraries: &mut [],
+            },
+            &runtime,
+        )
+        .unwrap();
+        let crate::recipe::RowState::NeedsNewer(reason) = row.state else {
+            panic!("expected component floor refusal")
+        };
+        assert!(reason.contains(expected), "{reason}");
+        assert_eq!(requests.load(Ordering::Relaxed), 2);
+    }
+    let m = Manifest::new_recipe(
+        "application/vnd.unemu.recipe.machine.v1",
+        "synthetic",
+        Descriptor::new(mt::RECIPE_CONFIG, Digest::of(b"config"), 6),
+        vec![],
+    )
+    .unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let client = Client::for_test_transport(
+        "registry.example",
+        Box::new(OnlyManifest {
+            bytes: m.encode().unwrap(),
+            requests: requests.clone(),
+        }),
+    );
+    let source = Reference::parse(
+        "registry.example/unemu/recipes/machines/synthetic/demo:latest",
+        "registry.example",
+    )
+    .unwrap();
+    let runtime = Compatibility::new(v(9), v(1)).with_core("synthetic", v(9), v(1));
+    let temp = Temp::new();
+    let error = crate::recipe::pull_with_compatibility(
+        &client,
+        &source,
+        &temp.0.join("pulled"),
+        ::recipe::Providers(&[]),
+        &runtime,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("no latest tag"), "{error}");
+    // A latest reference is refused before the manifest is requested.
+    assert_eq!(requests.load(Ordering::Relaxed), 0);
+}

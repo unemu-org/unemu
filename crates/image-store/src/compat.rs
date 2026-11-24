@@ -571,6 +571,7 @@ pub fn artifact(kind: &str) -> Option<AppVersion> {
     match kind {
         media_type::MACHINE | media_type::MEDIA_SET | media_type::FIRMWARE => Some(BASELINE),
         media_type::RECIPE_MEDIA | media_type::RECIPE_FIRMWARE => Some(AppVersion::new(0, 0, 3)),
+        media_type::RECIPE_MACHINE => Some(NEXT_RELEASE),
         _ => None,
     }
 }

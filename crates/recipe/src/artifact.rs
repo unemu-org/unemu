@@ -5,8 +5,8 @@
 //! config alone.
 //!
 //! **The artifact** (§7.1). The manifest's `artifactType` is
-//! [`media_type::RECIPE_MEDIA`] or [`media_type::RECIPE_FIRMWARE`], one per
-//! kind. Its config is the recipe file itself ([`media_type::RECIPE_CONFIG`]),
+//! [`media_type::RECIPE_MEDIA`], [`media_type::RECIPE_FIRMWARE`] or
+//! [`media_type::RECIPE_MACHINE`], one per kind. Its config is the recipe file itself ([`media_type::RECIPE_CONFIG`]),
 //! so the config digest is the recipe's digest. Its layers, in this order:
 //! the work file the recipe names ([`media_type::RECIPE_WORK`]), each
 //! bundled input in recipe order ([`media_type::RECIPE_INPUT`]) and each
@@ -71,7 +71,7 @@ pub fn artifact_type(kind: Kind) -> &'static str {
     match kind {
         Kind::Media => media_type::RECIPE_MEDIA,
         Kind::Firmware => media_type::RECIPE_FIRMWARE,
-        Kind::Machine => "application/vnd.unemu.recipe.machine.v1",
+        Kind::Machine => media_type::RECIPE_MACHINE,
     }
 }
 
@@ -80,6 +80,7 @@ pub fn kind_of(artifact_type: &str) -> Option<Kind> {
     match artifact_type {
         media_type::RECIPE_MEDIA => Some(Kind::Media),
         media_type::RECIPE_FIRMWARE => Some(Kind::Firmware),
+        media_type::RECIPE_MACHINE => Some(Kind::Machine),
         _ => None,
     }
 }
@@ -595,7 +596,18 @@ pub fn bundle_with_levels(
     let locked = lock::open(&digest.value, &lock_dir).map_err(Refusal::Unreadable)?;
     let required = requirements(&recipe, &locked.manifest, providers).map_err(Refusal::Codec)?;
     let (title_text, description) = match recipe.kind {
-        Kind::Machine => return Err(Refusal::Codec("machine recipes are not built yet".into())),
+        Kind::Machine => (
+            recipe
+                .template
+                .as_ref()
+                .and_then(|t| t.title.as_ref())
+                .map(|v| v.value.clone()),
+            recipe
+                .template
+                .as_ref()
+                .and_then(|t| t.description.as_ref())
+                .map(|v| v.value.clone()),
+        ),
         Kind::Media => {
             let merged = crate::merge::merge(&recipe, work.as_deref());
             (
@@ -1071,6 +1083,34 @@ mod tests {
         match result {
             Err(Refusal::Codec(why)) => why,
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn machine_recipe_names_use_the_whole_namespace_and_reserve_kind_segments() {
+        assert_eq!(
+            recipe_name("unemu/team/machines/ibm-pc/demo:1.3.0", "1.1"),
+            "unemu/team/recipes/machines/ibm-pc/demo:1.3.0"
+        );
+        assert_eq!(
+            recipe_name("unemu/machines/ibm-pc/demo:1.3.0", "1.1"),
+            "unemu/recipes/machines/ibm-pc/demo:1.3.0"
+        );
+        assert_eq!(
+            recipe_name("unemu/media/ibm-pc/demo:1-r1", "1.0"),
+            "unemu/recipes/media/ibm-pc/demo:1-r1"
+        );
+        for reserved in ["media", "firmware", "machines", "recipes"] {
+            assert!(!crate::spec::namespace_valid(&format!(
+                "unemu/{reserved}/team"
+            )));
+            assert_eq!(
+                publisher_namespace(
+                    &format!("unemu/{reserved}/recipes/machines/ibm-pc/demo"),
+                    "1.1"
+                ),
+                None
+            );
         }
     }
 

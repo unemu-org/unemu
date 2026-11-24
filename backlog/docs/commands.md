@@ -1874,12 +1874,31 @@ config unchanged, with verified runtime content, corresponding firmware source
 archives, package rights texts and package provenance. Document-owned zero disks
 need no base blob. Unlocked layers are sorted by stored digest.
 
+Machine pinning stages the output without a tag, writes and checks the lock and
+pinned recipe text, then tags last. A failed machine pin leaves no new output tag.
+
 A draft builds and tags `<name>:<version>` without running a guest. Repeating
-the same build reports the existing digest. Pinned machine recipes refuse with
-`pinned machine recipes require machine lock support`; machine locks, recipe
-artifact publication and compatibility-marker inheritance remain pending.
-`--keep-as` for machine recipes also awaits machine lock support. Acquiring
-packages alone creates no tags.
+the same build reports the existing digest. `recipe pin` writes `digest` after
+`version` and a three-file lock containing only the output manifest, config and
+metadata. A pinned build verifies its composed config, metadata, descriptors and
+dependency closure, then publishes the original locked bytes in locked layer
+order. It never restamps locked compatibility markers. A lost lock is accepted
+only when reconstruction reproduces the pinned digest; a present broken lock
+fails. `--keep-as TAG` uses another tag of the same repository. Output version
+tags are immutable. Acquiring packages alone creates no tags.
+
+Published 1.0 recipes remain at 1.0: pushing a 1.1 recipe to a tag already
+holding 1.0 is refused even when their output digest is identical. Publish a
+new output version or revision instead.
+
+Machine recipes bundle, inspect, push and pull as
+`application/vnd.unemu.recipe.machine.v1`, with the same permitted-text and lock
+rules as the other recipe kinds. They have no `latest`. Official output builds
+check that every blob is open and copyleft content carries its corresponding
+source archive before tagging; a build never pushes. Imported licences survive
+unchanged. The output inherits firmware core floors and rates its encodings in
+the front-end domain; recipe preparation separately requires the first 1.1
+front-end release. Unsupported requirements stop before payload downloads.
 
 - The tag is `<name>:<release>-r<revision>` (`<name>:r<revision>` without a
   release), in the store of `--store DIR` or the default store, created

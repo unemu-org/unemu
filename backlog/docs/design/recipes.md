@@ -1664,9 +1664,32 @@ retaining runtime content, each selected ROM's package source archive and rights
 texts, and package provenance. Unique unlocked layers are sorted by stored
 digest; conflicting descriptors fail. A document-owned zero disk needs no base
 blob, and construction never executes a guest. Drafts tag `<name>:<version>`.
-Machine locks, recipe artifact publication and compatibility-marker inheritance
-remain pending: pinned machine recipes and their `--keep-as` builds are refused
-explicitly until machine lock support lands.
+Published 1.0 recipes remain at 1.0: pushing a 1.1 recipe to a tag already
+holding 1.0 is refused even when their output digest is identical. Publish a
+new output version or revision instead.
+
+Machine pinning stages the output without a tag, writes and checks the lock and
+pinned recipe text, then tags last. A failed machine pin leaves no new output tag.
+
+Machine pinning writes `digest` after `version` and retains exactly three lock
+files: the manifest, composed config and metadata. Imported payloads and package
+texts remain in the verified dependency closure and never enter the lock. A
+locked rebuild compares config, metadata, descriptors and the exact closure;
+locked layer order wins over the unlocked digest sort. It publishes the original
+manifest bytes and compatibility markers without restamping. A missing lock is
+reconstructed only when the resulting manifest matches `machine.digest`; a
+present broken lock is refused. Output version tags never move. A successful
+`--keep-as TAG` build uses another tag of the same repository.
+
+Official outputs pass the open-content and corresponding-source checks before
+tagging, and the registry applies its existing publication guard on push. Imported
+licences and package source links are retained; `[license]` applies only to
+generated config and metadata. A build never pushes.
+
+The runnable output inherits firmware core floors and rates its stored encodings
+in the front-end domain. A stated minimum can only raise the core floor. Recipe
+preparation separately requires the first front-end release implementing 1.1.
+Unsupported core or front-end requirements are refused before payload requests.
 
 ## 7. Recipes as registry artifacts
 
@@ -1674,10 +1697,10 @@ explicitly until machine lock support lands.
 
 | Part | Content |
 | --- | --- |
-| Manifest `artifactType` | `application/vnd.unemu.recipe.media.v1` or `application/vnd.unemu.recipe.firmware.v1`: one per kind, because a registry can filter a listing by artifact type and by nothing else. |
+| Manifest `artifactType` | `application/vnd.unemu.recipe.media.v1`, `application/vnd.unemu.recipe.firmware.v1` or `application/vnd.unemu.recipe.machine.v1`: one per kind, because a registry can filter a listing by artifact type and by nothing else. |
 | Config | The recipe file itself, media type `application/vnd.unemu.recipe.v1+toml`. The config digest is the recipe's digest. |
 | Layers | The work file when the recipe names one, each bundled input, and the three lock files, each with `org.opencontainers.image.title` as its file name. The work file is the one that was beside the recipe when it was pinned, so the artifact is self-contained. |
-| Annotations | `unemu.platform`; `unemu.recipe.output` (`name:tag`); `unemu.recipe.output.digest`; the title and description for registry web pages; `unemu.min-app-version`, here the oldest release that can *build* the recipe; `org.opencontainers.image.licenses = "CC0-1.0"`. |
+| Annotations | `unemu.platform`; `unemu.recipe.output` (`name:tag`); `unemu.recipe.output.digest`; the title and description for registry web pages; `unemu.min-app-version` for the locked output's core floor and `unemu.min-frontend-version` for recipe preparation and packaging; `org.opencontainers.image.licenses = "CC0-1.0"`. |
 
 A bundled input is an ordinary input: it has a hash and a size in the
 recipe, and the recipe's own folder or artifact is simply the source that

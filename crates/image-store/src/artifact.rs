@@ -46,6 +46,8 @@ pub mod media_type {
     pub const RECIPE_MEDIA: &str = "application/vnd.unemu.recipe.media.v1";
     /// A firmware recipe (recipes.md §7.1).
     pub const RECIPE_FIRMWARE: &str = "application/vnd.unemu.recipe.firmware.v1";
+    /// A machine-template recipe and its permitted texts and lock.
+    pub const RECIPE_MACHINE: &str = "application/vnd.unemu.recipe.machine.v1";
     /// A recipe artifact's config: the recipe file itself, whose digest is
     /// the recipe's.
     pub const RECIPE_CONFIG: &str = "application/vnd.unemu.recipe.v1+toml";
@@ -62,7 +64,10 @@ pub mod media_type {
 
 /// Whether `kind` is the artifact type of a recipe (recipes.md §7.1).
 pub fn is_recipe(kind: &str) -> bool {
-    matches!(kind, media_type::RECIPE_MEDIA | media_type::RECIPE_FIRMWARE)
+    matches!(
+        kind,
+        media_type::RECIPE_MEDIA | media_type::RECIPE_FIRMWARE | media_type::RECIPE_MACHINE
+    )
 }
 
 /// The layer types of a recipe artifact, each at most 1 MiB, as the bundle
@@ -470,6 +475,7 @@ impl Manifest {
                     | media_type::FIRMWARE
                     | media_type::RECIPE_MEDIA
                     | media_type::RECIPE_FIRMWARE
+                    | media_type::RECIPE_MACHINE
             )
         {
             return Err(invalid("unsupported manifest envelope"));
@@ -712,7 +718,11 @@ mod tests {
             part(media_type::RECIPE_INPUT, b"notes"),
             part(media_type::RECIPE_LOCK, b"manifest"),
         ];
-        for kind in [media_type::RECIPE_MEDIA, media_type::RECIPE_FIRMWARE] {
+        for kind in [
+            media_type::RECIPE_MEDIA,
+            media_type::RECIPE_FIRMWARE,
+            media_type::RECIPE_MACHINE,
+        ] {
             let manifest =
                 Manifest::new_recipe(kind, "ibm-pc", config.clone(), parts.clone()).unwrap();
             let bytes = manifest.encode().unwrap();
@@ -721,7 +731,11 @@ mod tests {
             assert!(is_recipe(manifest.artifact_type()));
             assert_eq!(
                 crate::compat::envelope(&manifest, &[]).unwrap(),
-                crate::compat::AppVersion::new(0, 0, 3)
+                if kind == media_type::RECIPE_MACHINE {
+                    crate::compat::NEXT_RELEASE
+                } else {
+                    crate::compat::AppVersion::new(0, 0, 3)
+                }
             );
         }
         let refused = |config: Descriptor, layers: Vec<Descriptor>| {

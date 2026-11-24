@@ -1111,12 +1111,20 @@ fn build_with_cores(
         let _ = output.flush();
     };
     let outcome = if pin {
-        match recipe::pin::pin_path(request, &mut log) {
+        match recipe::template::pin_path(
+            request,
+            &|platform| cores.and_then(|cores| cores.for_platform(platform)),
+            options.fetch.then_some(&RegistryAcquire {
+                config: options.config.as_deref(),
+                platforms,
+            } as &dyn recipe::template::Acquire),
+            &mut log,
+        ) {
             Ok(recipe::pin::Pinned::NotBuilt(outcome)) => Ok(*outcome),
             Ok(recipe::pin::Pinned::Already(digest)) => {
                 let _ = writeln!(
                     io.errors,
-                    "unemu recipe pin: {}: already pinned to {digest}; a changed artifact is a new revision: raise revision and remove digest, then pin",
+                    "unemu recipe pin: {}: already pinned to {digest}; a changed artifact needs a new version or revision: raise it and remove digest, then pin",
                     options.path.display()
                 );
                 save_libraries(&libraries, &caches, command, io);

@@ -283,6 +283,27 @@ pub fn prepare(
         .providers
         .get(family)
         .ok_or("no recipe provider for template platform")?;
+    let levels = preparation_levels(request.store, family, core_for)?;
+    let mut required = crate::compat::requirements(
+        &recipe,
+        &image_store::compat::Requirements {
+            core: image_store::compat::Requirement::None,
+            frontend: image_store::compat::Requirement::None,
+        },
+        &crate::compat::TABLE,
+    )?;
+    if let Some(stated) = &recipe.identity.min_app_version {
+        required.core = stated
+            .value
+            .parse::<image_store::compat::AppVersion>()
+            .map_err(|e| e.to_string())?;
+    }
+    image_store::compat::Requirements {
+        core: image_store::compat::Requirement::Release(required.core),
+        frontend: image_store::compat::Requirement::Release(required.frontend),
+    }
+    .check("the machine recipe", levels)
+    .map_err(|e| e.to_string())?;
     let downloads = request.store.root().join(build::DOWNLOADS);
     let local_index = if request.index.is_none() {
         Some(crate::store_index::StoreIndex::load(request.store).map_err(|e| e.to_string())?)
@@ -401,28 +422,98 @@ pub fn prepare(
     })
 }
 
-/// Dispatch existing recipes unchanged; machine drafts compose and tag through
-/// their provider. Pinned machine builds need the machine lock implementation.
+fn preparation_levels(
+    store: &Store,
+    family: &str,
+    core_for: &dyn Fn(&str) -> Option<&'static dyn Core>,
+) -> Result<image_store::compat::Levels, String> {
+    use image_store::compat::{Levels, BASELINE, EXTRACTION_BASELINE};
+    if store.compatibility_configured() {
+        return Ok(store.compatibility_levels(family));
+    }
+    let core = core_for(family)
+        .map(|core| core.description().version.parse().map(|v| (v, BASELINE)))
+        .transpose()
+        .map_err(|e: image_store::Error| e.to_string())?;
+    Ok(Levels::new(
+        core,
+        EXTRACTION_BASELINE,
+        crate::compat::NEWEST_ROW,
+    ))
+}
+
+/// Compose templates and verify their locks before publishing through the provider.
 pub fn build_path(
     request: build::Request<'_>,
     core_for: &dyn Fn(&str) -> Option<&'static dyn Core>,
     acquire: Option<&dyn Acquire>,
     log: &mut dyn FnMut(&str),
 ) -> std::io::Result<build::Outcome> {
+    build_path_with(request, core_for, acquire, log, false)
+}
+
+/// Pin a template only after its lock and pinned recipe text pass their checks.
+pub fn pin_path(
+    request: build::Request<'_>,
+    core_for: &dyn Fn(&str) -> Option<&'static dyn Core>,
+    acquire: Option<&dyn Acquire>,
+    log: &mut dyn FnMut(&str),
+) -> std::io::Result<crate::pin::Pinned> {
+    crate::pin::pin_with(request, log, |request, log| {
+        build_path_with(request, core_for, acquire, log, true)
+    })
+}
+
+fn build_path_with(
+    request: build::Request<'_>,
+    core_for: &dyn Fn(&str) -> Option<&'static dyn Core>,
+    acquire: Option<&dyn Acquire>,
+    log: &mut dyn FnMut(&str),
+    defer_tag: bool,
+) -> std::io::Result<build::Outcome> {
     let recipe = match crate::load(request.path, request.providers)? {
         crate::Opened::Recipe(recipe, _, _) if recipe.kind == crate::model::Kind::Machine => recipe,
         _ => return build::build_path(request, log),
     };
-    if request.keep_as.is_some() {
-        return Err(std::io::Error::other(
-            "machine template --keep-as requires machine lock support",
-        ));
+    let lost = recipe.identity.digest.is_some() && crate::lock_lost(request.path);
+    let locked = recipe
+        .identity
+        .digest
+        .as_ref()
+        .filter(|_| !lost)
+        .map(|digest| crate::lock::open(&digest.value, &crate::lock::dir(request.path)))
+        .transpose()
+        .map_err(std::io::Error::other)?;
+    if let Some(locked) = &locked {
+        let family = recipe
+            .identity
+            .platform
+            .as_ref()
+            .map(|p| p.value.as_str())
+            .unwrap_or_default();
+        let levels =
+            preparation_levels(request.store, family, core_for).map_err(std::io::Error::other)?;
+        image_store::compat::Requirements::read(&locked.manifest_bytes)
+            .check(&crate::artifact::output(&recipe), levels)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
     }
-    if recipe.identity.digest.is_some() {
-        return Err(std::io::Error::other(
-            "pinned machine recipes require machine lock support",
-        ));
-    }
+    let own = crate::artifact::output(&recipe);
+    let (repository, own_tag) = own.rsplit_once(':').unwrap_or((own.as_str(), ""));
+    let reference = match request.keep_as {
+        None => own.clone(),
+        Some(kept) if kept.is_empty() || kept.contains([':', '/', '@']) => {
+            return Err(std::io::Error::other(format!(
+                "--keep-as {kept}: give a tag of the recipe's repository, without the repository"
+            )));
+        }
+        Some(kept) if kept == own_tag => {
+            return Err(std::io::Error::other(format!(
+                "--keep-as {kept}: that is the recipe's own tag; a kept result takes another"
+            )));
+        }
+        Some(kept) => format!("{repository}:{kept}"),
+    };
+    let recipe_digest = Digest::of(&std::fs::read(request.path)?);
     let family = image_store::platform::canonical(
         recipe
             .identity
@@ -447,26 +538,51 @@ pub fn build_path(
                 let core = core_for(family).ok_or("no template core")?;
                 let document = ConfigDocument::new(provider.template_config_type()?, &config);
                 let (prepared, slots) = compose(core, family, document, &plan.disks, &facts)?;
-                provider.publish_template(store, &recipe, &prepared, &slots, &facts)
+                let (current, descriptor) = provider.template_manifest(
+                    store,
+                    &recipe,
+                    &prepared,
+                    &slots,
+                    &facts,
+                    locked.as_ref(),
+                )?;
+                let descriptor = match &locked {
+                    Some(locked) => {
+                        crate::lock::verify_machine(locked, &current)?;
+                        crate::lock::store(store, locked, &[])?
+                    }
+                    None => {
+                        if lost {
+                            let digest = &descriptor.digest;
+                            let pinned = recipe
+                                .identity
+                                .digest
+                                .as_ref()
+                                .map(|d| d.value.as_str())
+                                .unwrap_or_default();
+                            if digest.to_string() != pinned {
+                                return Err(format!("the lock is lost; this build makes {digest}, the recipe pins {pinned}: the recipe needs its lock; restore it from where the recipe was published"));
+                            }
+                        }
+                        descriptor
+                    }
+                };
+                if defer_tag {
+                    Ok(build::Published {
+                        descriptor,
+                        created: false,
+                    })
+                } else {
+                    provider
+                        .publisher()
+                        .ok_or("no template publisher")?
+                        .tag_locked(store, &reference, &descriptor)
+                }
             })();
             match result {
                 Err(error) => Ok(build::Outcome::Failed { plan, error }),
                 Ok(published) => {
-                    let reference = format!(
-                        "{}:{}",
-                        recipe
-                            .identity
-                            .name
-                            .as_ref()
-                            .map(|n| n.value.as_str())
-                            .unwrap_or_default(),
-                        recipe
-                            .identity
-                            .version
-                            .as_ref()
-                            .map(|v| v.value.as_str())
-                            .unwrap_or_default()
-                    );
+                    build::record(store, &reference, &published, &recipe_digest, log);
                     Ok(build::Outcome::Built(Box::new(build::Report {
                         plan: *plan,
                         reference,
@@ -482,10 +598,10 @@ pub fn build_path(
                             .into_iter()
                             .collect(),
                         attachments: Vec::new(),
-                        locked: false,
+                        locked: recipe.identity.digest.is_some(),
                         drift: Vec::new(),
                         outputs: BTreeSet::new(),
-                        lock_rebuilt: false,
+                        lock_rebuilt: lost,
                     })))
                 }
             }

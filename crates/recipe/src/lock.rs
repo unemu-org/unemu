@@ -272,7 +272,8 @@ fn check(
 /// The files a lock of the artifact `manifest` in `store` holds: the
 /// manifest, its config and every layer whose decoded SHA-256 is not among
 /// `made`, the outputs the steps made (lower-case hex), as the store holds
-/// them. A recipe is pinned with them ([`crate::pin::pin_path`]), and a
+/// them. Machines retain only config and metadata beside the manifest:
+/// their imported payloads belong to the dependency closure. A recipe is pinned with them ([`crate::pin::pin_path`]), and a
 /// build whose lock is lost rebuilds them (recipes §7.2).
 pub fn files_of(
     store: &Store,
@@ -289,7 +290,10 @@ pub fn files_of(
     let mut written = vec![&decoded.config];
     for layer in &decoded.layers {
         let is_made = layer.decoded_digest().is_ok_and(|d| made.contains(d.hex()));
-        if !is_made {
+        if !is_made
+            && (decoded.artifact_type() != media_type::MACHINE
+                || layer.media_type == media_type::METADATA)
+        {
             written.push(layer);
         }
     }
@@ -604,11 +608,7 @@ pub fn compare(
                 String::new(),
             ),
         },
-        Kind::Machine => c.error(
-            "machine recipe",
-            "machine recipes are not built yet".into(),
-            String::new(),
-        ),
+        Kind::Machine => machine(&mut c, recipe, locked),
         Kind::Firmware => match firmware::Config::decode(&locked.config) {
             Ok(config) => {
                 package(&mut c, recipe, locked, &config, provider);
@@ -622,6 +622,146 @@ pub fn compare(
         },
     }
     c.out
+}
+
+fn machine(c: &mut Comparer<'_>, recipe: &Recipe, locked: &Locked) {
+    if let Some(template) = &recipe.template {
+        for (key, now) in [
+            ("org.opencontainers.image.title", &template.title),
+            (
+                "org.opencontainers.image.description",
+                &template.description,
+            ),
+        ] {
+            c.same(
+                key,
+                text(locked.manifest.annotations.get(key).map(String::as_str)),
+                text(stated(now)),
+            );
+        }
+        match locked
+            .metadata
+            .as_ref()
+            .map(|bytes| metadata::Metadata::decode(bytes, &locked.manifest.layers))
+        {
+            Some(Ok(metadata)) => {
+                let labels = template
+                    .labels
+                    .iter()
+                    .map(|v| v.value.clone())
+                    .collect::<Vec<_>>();
+                c.same("template.labels", list(&metadata.labels), list(&labels));
+                c.same(
+                    "template.titles",
+                    metadata.titles.len().to_string(),
+                    "0".into(),
+                );
+            }
+            _ => c.error(
+                "template.metadata",
+                "missing or unreadable".into(),
+                "template metadata".into(),
+            ),
+        }
+    }
+    let provenance = recipe
+        .uses
+        .iter()
+        .filter_map(|usage| {
+            Some((
+                usage.id.value.clone(),
+                (
+                    usage.image.as_ref()?.value.clone(),
+                    usage.digest.as_ref()?.value.clone(),
+                ),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Ok(expected) = toml::to_string(&provenance) {
+        c.same(
+            "template.uses",
+            locked
+                .manifest
+                .annotations
+                .get("unemu.template.uses")
+                .cloned()
+                .unwrap_or_default(),
+            expected,
+        );
+    }
+    if let Some(stated) = &recipe.identity.min_app_version {
+        let core = image_store::compat::Requirement::of(&locked.manifest).release();
+        if let (Ok(core), Ok(stated)) = (
+            core,
+            stated.value.parse::<image_store::compat::AppVersion>(),
+        ) {
+            if core < stated {
+                c.error(
+                    "machine.min_app_version",
+                    core.to_string(),
+                    stated.to_string(),
+                );
+            }
+        }
+    }
+    let expression = recipe
+        .license
+        .as_ref()
+        .and_then(|l| stated(&l.expression))
+        .unwrap_or(GENERATED_LICENSE);
+    for descriptor in std::iter::once(&locked.manifest.config).chain(
+        locked
+            .manifest
+            .layers
+            .iter()
+            .filter(|d| d.media_type == media_type::METADATA),
+    ) {
+        c.same(
+            "template.generated.license",
+            descriptor
+                .annotations
+                .get(image_store::license::LICENSE)
+                .cloned()
+                .unwrap_or_default(),
+            expression.into(),
+        );
+    }
+}
+
+/// Compare the composed config, metadata, imported descriptors and dependency closure.
+/// Only the locked order and compatibility markers survive newer writers unchanged.
+pub fn verify_machine(locked: &Locked, current: &Manifest) -> Result<(), String> {
+    if locked.manifest.config != current.config {
+        return Err("the machine lock disagrees with the composed config or its descriptor".into());
+    }
+    let layers = |manifest: &Manifest| {
+        manifest
+            .layers
+            .iter()
+            .map(|d| (d.digest.clone(), d.clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    if layers(&locked.manifest) != layers(current) {
+        return Err(
+            "the machine lock disagrees with the metadata, layer descriptors or dependency closure"
+                .into(),
+        );
+    }
+    let mut expected = current.clone();
+    expected.layers = locked.manifest.layers.clone();
+    for key in [
+        image_store::compat::MIN_APP_VERSION,
+        image_store::compat::MIN_FRONTEND_VERSION,
+    ] {
+        expected.annotations.remove(key);
+        if let Some(value) = locked.manifest.annotations.get(key) {
+            expected.annotations.insert(key.into(), value.clone());
+        }
+    }
+    if expected != locked.manifest {
+        return Err("the machine lock disagrees with the manifest annotations".into());
+    }
+    Ok(())
 }
 
 /// The layer whose decoded content is `blob`, never the metadata.
@@ -1626,8 +1766,10 @@ pub fn tag(
     }
     store.check_new_tag(reference).map_err(|e| e.to_string())?;
     let package = validator.artifact_type() == media_type::FIRMWARE;
-    if let Some(problem) = image_store::tag::new_image_problem(reference, package) {
-        return Err(problem);
+    if image_store::tag::governs(validator.artifact_type()) {
+        if let Some(problem) = image_store::tag::new_image_problem(reference, package) {
+            return Err(problem);
+        }
     }
     match store.update_tag(reference, manifest, None, validator) {
         Ok(()) => Ok(crate::build::Published {
@@ -1642,12 +1784,12 @@ pub fn tag(
 }
 
 /// The text of a recipe file with `digest = "<digest>"` on the line after
-/// `revision`, in the file's own line ends. `revision` is the byte span of
-/// the revision's value.
-pub fn with_digest(text: &str, revision: &std::ops::Range<usize>, digest: &str) -> String {
-    let end = text[revision.end..]
+/// `version` or `revision`, in the file's own line ends. `anchor` is the
+/// byte span of that value.
+pub fn with_digest(text: &str, anchor: &std::ops::Range<usize>, digest: &str) -> String {
+    let end = text[anchor.end..]
         .find('\n')
-        .map_or(text.len(), |n| revision.end + n + 1);
+        .map_or(text.len(), |n| anchor.end + n + 1);
     let crlf = text[..end].ends_with("\r\n");
     let eol = if crlf { "\r\n" } else { "\n" };
     let mut out = String::with_capacity(text.len() + 80);

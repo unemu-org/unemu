@@ -30,16 +30,17 @@ pub trait Provider {
         Err("this platform cannot compose templates".into())
     }
 
-    /// Store the prepared document and its runtime and archival closure, then tag last.
-    fn publish_template(
+    /// Construct an untagged template envelope with verified runtime and archival content.
+    fn template_manifest(
         &self,
         _store: &image_store::Store,
         _recipe: &crate::model::Recipe,
         _prepared: &unemu_core_api::PreparedConfig,
         _slots: &[unemu_core_api::BindingSlot],
         _facts: &crate::template::Facts,
-    ) -> Result<crate::build::Published, String> {
-        Err("this platform cannot publish templates".into())
+        _locked: Option<&crate::lock::Locked>,
+    ) -> Result<(image_store::Manifest, image_store::Descriptor), String> {
+        Err("this platform cannot construct templates".into())
     }
 
     /// The core-owned rating of the platform spelling a recipe envelope writes.
