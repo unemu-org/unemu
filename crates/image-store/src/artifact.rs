@@ -22,6 +22,7 @@ pub mod media_type {
     pub const MEDIA_SET_CONFIG: &str = "application/vnd.unemu.media-set.config.v1+toml";
     pub const OPTICAL: &str = "application/vnd.unemu.media.optical.v1";
     pub const EXTRA: &str = "application/vnd.unemu.media.extra.v1";
+    pub const PC_LAUNCH_CONFIG: &str = "application/vnd.unemu.pc.launch.v1+toml";
     pub const CONFIG: &str = "application/vnd.unemu.machine.config.v1+toml";
     pub const METADATA: &str = "application/vnd.unemu.metadata.v1+json";
     pub const FIRMWARE_CONFIG: &str = "application/vnd.unemu.firmware.config.v1+toml";
@@ -481,16 +482,18 @@ impl Manifest {
         } else {
             self.config.validate()?;
         }
-        if self.config.media_type
-            != if recipe {
-                media_type::RECIPE_CONFIG
-            } else if self.artifact_type == media_type::MEDIA_SET {
-                media_type::MEDIA_SET_CONFIG
-            } else if self.artifact_type == media_type::FIRMWARE {
-                media_type::FIRMWARE_CONFIG
-            } else {
-                media_type::CONFIG
-            }
+        if !(self.artifact_type == media_type::MACHINE
+            && self.config.media_type == media_type::PC_LAUNCH_CONFIG)
+            && self.config.media_type
+                != if recipe {
+                    media_type::RECIPE_CONFIG
+                } else if self.artifact_type == media_type::MEDIA_SET {
+                    media_type::MEDIA_SET_CONFIG
+                } else if self.artifact_type == media_type::FIRMWARE {
+                    media_type::FIRMWARE_CONFIG
+                } else {
+                    media_type::CONFIG
+                }
         {
             return Err(invalid("config descriptor has the wrong media type"));
         }
@@ -510,7 +513,11 @@ impl Manifest {
                     layer.media_type
                 )));
             }
+            let archival_extra = self.artifact_type == media_type::MACHINE
+                && self.config.media_type == media_type::PC_LAUNCH_CONFIG
+                && layer.decoded_media_type() == media_type::EXTRA;
             if !display
+                && !archival_extra
                 && self.artifact_type == media_type::MACHINE
                 && matches!(
                     layer.media_type.as_str(),
@@ -528,6 +535,7 @@ impl Manifest {
                 // Envelope-owned artifacts declare their own codecs.
                 let types = match self.artifact_type.as_str() {
                     _ if recipe => RECIPE_PARTS,
+                    _ if archival_extra => crate::codec::FIRMWARE_PAYLOAD_TYPES,
                     media_type::MEDIA_SET if types.is_empty() => crate::codec::MEDIA_PAYLOAD_TYPES,
                     media_type::FIRMWARE if types.is_empty() => {
                         crate::codec::FIRMWARE_PAYLOAD_TYPES
@@ -540,6 +548,7 @@ impl Manifest {
                 layer.media_type.as_str(),
                 media_type::MANIFEST
                     | media_type::CONFIG
+                    | media_type::PC_LAUNCH_CONFIG
                     | media_type::MEDIA_SET_CONFIG
                     | media_type::FIRMWARE_CONFIG
             ) {
@@ -587,6 +596,11 @@ pub(crate) const NEUTRAL_TYPES: &[(&str, u64, crate::compat::AppVersion)] = {
     &[
         (MANIFEST, MAX_SMALL_BLOB, BASELINE),
         (CONFIG, MAX_SMALL_BLOB, BASELINE),
+        (
+            PC_LAUNCH_CONFIG,
+            MAX_SMALL_BLOB,
+            crate::compat::NEXT_RELEASE,
+        ),
         (MEDIA_SET_CONFIG, MAX_SMALL_BLOB, BASELINE),
         (FIRMWARE_CONFIG, MAX_SMALL_BLOB, BASELINE),
         (METADATA, MAX_SMALL_BLOB, BASELINE),

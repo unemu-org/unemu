@@ -27,6 +27,7 @@ thiserror.workspace = true
 unemu-core-api.workspace = true
 
 [dev-dependencies]
+unemu-core-api = { workspace = true, features = ["test-support"] }
 pc-harness = { workspace = true, features = ["test-support"] }
 machine-file = { workspace = true, features = ["test-support"] }
 unemu-pc-core.workspace = true

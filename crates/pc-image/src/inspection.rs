@@ -89,7 +89,15 @@ pub fn inspect(
     for m in &config.media {
         let mut chain = Vec::new();
         let mut head = crate::medium_head(m)?.store()?;
-        loop {
+        if let Some(zero) = &m.zero {
+            chain.push(ChainMember {
+                digest: head.clone(),
+                size: 0,
+                shared_by: 0,
+                blank_bytes: Some(zero.size),
+            });
+        }
+        while m.zero.is_none() {
             let d = manifest
                 .layers
                 .iter()

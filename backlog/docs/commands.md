@@ -1867,10 +1867,19 @@ missing uses are reported like missing inputs. The selected core must
 advertise content bindings; otherwise the command refuses with
 `this core cannot compose templates` before downloads. Package identity,
 kind, platform, config and full payload hashes are verified and the
-platform provider extracts package-local item facts. After successful
-preparation this build still refuses with
-`machine templates are not built yet`: composition, image construction and
-machine locks are not available yet. Acquiring packages creates no tags.
+platform provider extracts package-local item facts. The core discovers binding
+slots; every declared disk must match a zero-disk slot by id and exact size,
+and every use must be consumed. Composition stores the core's portable launch
+config unchanged, with verified runtime content, corresponding firmware source
+archives, package rights texts and package provenance. Document-owned zero disks
+need no base blob. Unlocked layers are sorted by stored digest.
+
+A draft builds and tags `<name>:<version>` without running a guest. Repeating
+the same build reports the existing digest. Pinned machine recipes refuse with
+`pinned machine recipes require machine lock support`; machine locks, recipe
+artifact publication and compatibility-marker inheritance remain pending.
+`--keep-as` for machine recipes also awaits machine lock support. Acquiring
+packages alone creates no tags.
 
 - The tag is `<name>:<release>-r<revision>` (`<name>:r<revision>` without a
   release), in the store of `--store DIR` or the default store, created

@@ -440,6 +440,620 @@ fn template_prepare_acquires_in_plan_order_only_with_consent_and_never_builds() 
         panic!("expected construction refusal");
     };
     assert!(plan.complete());
-    assert_eq!(error, "machine templates are not built yet");
+    assert!(
+        error.contains("config") || error.contains("TOML"),
+        "{error}"
+    );
     assert_eq!(target.list_tags(None, 100).unwrap().tags.len(), 0);
+}
+
+#[path = "support/template.rs"]
+mod template_support;
+use template_support::template_recipe;
+
+#[test]
+fn portable_template_builds_deterministically_and_opens_starts_reopens_and_exports() {
+    use recipe::{
+        build::{Outcome, Request},
+        template::{build_path, compose, prepare, Prepared},
+        Providers,
+    };
+    use unemu_core_api::{test_support::check_prepared, Core, RunLimit};
+    use unemu_pc_core::PcCore;
+    for source in &pc_image::template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            if pc_harness::test_support::fixtures::fixture(relative).is_none() {
+                return;
+            }
+        }
+    }
+    let temp = image_store::test_support::TempDir::new("portable-template");
+    let mut digests = Vec::new();
+    for index in 0..2 {
+        let root = temp.path().join(format!("build-{index}"));
+        fs::create_dir_all(&root).unwrap();
+        let store = Store::open(root.join("store")).unwrap().with_compatibility(
+            pc_image::compat::compatibility(pc_image::compat::NEXT_RELEASE),
+        );
+        let path = template_recipe(&store, &root);
+        let providers = [&pc_image::recipe::PcRecipes as &dyn recipe::provider::Provider];
+        let request = || Request {
+            path: &path,
+            providers: Providers(&providers),
+            store: &store,
+            index: None,
+            store_read: None,
+            libraries: &mut [],
+            fetcher: None,
+            keep_as: None,
+            find_outputs: false,
+        };
+        let core_for = |_: &str| {
+            Some(if index == 0 {
+                &PcCore as &'static dyn Core
+            } else {
+                &PermutedPcCore as &'static dyn Core
+            })
+        };
+        let Prepared::Ready {
+            plan,
+            mut facts,
+            config,
+        } = prepare(request(), &core_for, None, &mut |_| {}).unwrap()
+        else {
+            panic!("missing template inputs");
+        };
+        if index == 1 {
+            facts.uses.reverse();
+        }
+        let document = unemu_core_api::ConfigDocument::new(pc_config::launch::MEDIA_TYPE, &config);
+        let (prepared, _) = compose(
+            &PcCore as &dyn Core,
+            "ibm-pc",
+            document,
+            &plan.disks,
+            &facts,
+        )
+        .unwrap();
+        check_prepared(&PcCore as &dyn Core, "ibm-pc", &prepared).unwrap();
+        let result = build_path(request(), &core_for, None, &mut |_| {}).unwrap();
+        let Outcome::Built(report) = result else {
+            panic!("{result:?}");
+        };
+        let image = store
+            .resolve(&report.reference, &pc_image::PcProvider)
+            .unwrap();
+        let Outcome::Built(again) = build_path(request(), &core_for, None, &mut |_| {}).unwrap()
+        else {
+            panic!();
+        };
+        assert_eq!(
+            again.published.descriptor.digest,
+            report.published.descriptor.digest
+        );
+        assert!(!again.published.created);
+        let source =
+            pc_image::revision::Source::open(&store, &report.published.descriptor).unwrap();
+        let mut settings = source.machine().clone();
+        settings
+            .get_mut("memory")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert("extended_kib".into(), 2048.into());
+        let revised = pc_image::revision::plan(&store, &source, settings).unwrap();
+        let revision = pc_image::revision::publish(
+            &store,
+            &revised,
+            "private/machines/ibm-pc/revised:1.3.0",
+            None,
+        )
+        .unwrap();
+        store
+            .resolve_descriptor(&revision, &pc_image::PcProvider)
+            .unwrap();
+        assert_eq!(image.config, prepared.config.bytes);
+        assert_eq!(
+            image.manifest.config.media_type,
+            pc_config::launch::MEDIA_TYPE
+        );
+        assert!(image
+            .manifest
+            .layers
+            .windows(2)
+            .all(|d| d[0].digest < d[1].digest));
+        assert_eq!(
+            image
+                .manifest
+                .layers
+                .iter()
+                .filter(|d| d.decoded_media_type() == mt::TAR)
+                .count(),
+            3
+        );
+        assert!(!image
+            .manifest
+            .layers
+            .iter()
+            .any(|d| d.decoded_media_type() == pc_image::DISK_ZERO));
+        let portable = pc_config::launch::decode_portable(&image.config).unwrap();
+        assert!(portable.config.media[0].head.is_none());
+        assert_eq!(
+            portable.config.media[0].zero.as_ref().unwrap().size,
+            1048576
+        );
+        assert_eq!(
+            portable
+                .config
+                .slots
+                .iter()
+                .filter(|s| s.inserted.is_none())
+                .count(),
+            2
+        );
+        let id = pc_image::machine::create(
+            &store,
+            &report.published.descriptor,
+            &report.reference,
+            Some("Portable"),
+            None,
+        )
+        .unwrap();
+        for cycle in 0..2 {
+            let owner = pc_image::machine::own(&store, &id).unwrap();
+            let prepared =
+                pc_image::launch::prepare_machine(&owner, &PcCore, "Portable".into()).unwrap();
+            let mut machine = core_launch::start(&prepared.prepared).unwrap();
+            machine.run(RunLimit::steps(32)).unwrap();
+            machine.finish().unwrap();
+            drop(machine);
+            drop(owner);
+            if cycle == 0 {
+                let path = store.workspace_path(&id).unwrap().join("media/system.upfj");
+                let raw = vec![0; 1048576];
+                let mut journal = journal_files::JournalMedia::open(
+                    &path,
+                    &raw,
+                    raw.len() as u64,
+                    Default::default(),
+                )
+                .unwrap();
+                journal.write_batch(&[(0, [0x5a; 512])]);
+                journal.finish().unwrap();
+                let path = store.workspace_path(&id).unwrap().join("media/data.upfj");
+                let mut journal = journal_files::JournalMedia::open(
+                    &path,
+                    &raw,
+                    raw.len() as u64,
+                    Default::default(),
+                )
+                .unwrap();
+                journal.write_batch(&[(0, [0x6b; 512])]);
+                journal.finish().unwrap();
+            }
+        }
+        assert!(store
+            .workspace_path(&id)
+            .unwrap()
+            .join("media/system.upfj")
+            .is_file());
+        pc_image::inspection::inspect(&store, &report.published.descriptor, Some(&id)).unwrap();
+        pc_image::desktop::check(&store, &report.published.descriptor, Some(&id), || false)
+            .unwrap();
+        let snapshot = pc_image::machine::export::open(&store, &id).unwrap();
+        let reader = snapshot.current(&store, "C:").unwrap();
+        assert_eq!(reader.size(), 1048576);
+        let mut bytes = [1; 512];
+        reader.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x5a; 512]);
+        assert!(
+            snapshot
+                .media(&store)
+                .unwrap()
+                .iter()
+                .filter(|m| m.bytes == 0)
+                .count()
+                >= 2
+        );
+        let descriptions = PcCore
+            .describe_media("ibm-pc", snapshot.document())
+            .unwrap();
+        let slot = descriptions
+            .iter()
+            .find(|m| m.slot.label == "C:")
+            .unwrap()
+            .slot
+            .id;
+        let media = [unemu_core_api::ExportMedium::new(
+            slot,
+            reader.size(),
+            reader.as_ref(),
+        )];
+        let mut sink = unemu_core_api::test_support::MemoryExportSink::new();
+        let exported = PcCore
+            .export(
+                "ibm-pc",
+                snapshot.document(),
+                unemu_core_api::ExportRequest::new("raw", &media),
+                &mut sink,
+            )
+            .unwrap();
+        let outputs = sink.outputs();
+        assert_eq!(outputs.len(), 1);
+        let output = outputs.values().next().unwrap();
+        assert_eq!(output.len(), 1048576);
+        assert_eq!(&output[..512], &[0x5a; 512]);
+        assert!(output[512..].iter().all(|b| *b == 0));
+        let hash: String = exported.outputs[0]
+            .sha256
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(hash, Digest::of(output).hex());
+        drop(reader);
+        drop(snapshot);
+        let saved = pc_image::machine::commit(
+            &store,
+            &id,
+            "private/machines/ibm-pc/saved:1.3.0",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let saved_image = store
+            .resolve_descriptor(&saved, &pc_image::PcProvider)
+            .unwrap();
+        assert_eq!(
+            saved_image.manifest.config.media_type,
+            pc_config::launch::MEDIA_TYPE
+        );
+        let snapshot = pc_image::machine::export::open(&store, &id).unwrap();
+        let reader = snapshot.current(&store, "C:").unwrap();
+        reader.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x5a; 512]);
+        let data = snapshot.current(&store, "D:").unwrap();
+        data.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x6b; 512]);
+        assert_eq!(
+            image.config,
+            store
+                .resolve_descriptor(&report.published.descriptor, &pc_image::PcProvider)
+                .unwrap()
+                .config
+        );
+        digests.push(report.published.descriptor.digest);
+    }
+    assert_eq!(digests[0], digests[1]);
+}
+
+#[test]
+fn portable_stored_configs_refuse_session_records_bad_receipts_and_legacy_zero_disks() {
+    use recipe::{
+        build::{Outcome, Request},
+        Providers,
+    };
+    for source in &pc_image::template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            if pc_harness::test_support::fixtures::fixture(relative).is_none() {
+                return;
+            }
+        }
+    }
+    let temp = image_store::test_support::TempDir::new("portable-refusals");
+    let store = Store::open(temp.path().join("store"))
+        .unwrap()
+        .with_compatibility(pc_image::compat::compatibility(
+            pc_image::compat::NEXT_RELEASE,
+        ));
+    let path = template_recipe(&store, temp.path());
+    let providers = [&pc_image::recipe::PcRecipes as &dyn recipe::provider::Provider];
+    let result = recipe::template::build_path(
+        Request {
+            path: &path,
+            providers: Providers(&providers),
+            store: &store,
+            index: None,
+            store_read: None,
+            libraries: &mut [],
+            fetcher: None,
+            keep_as: None,
+            find_outputs: false,
+        },
+        &|_| Some(&unemu_pc_core::PcCore),
+        None,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Outcome::Built(report) = result else {
+        panic!("{result:?}");
+    };
+    let image = store
+        .resolve(&report.reference, &pc_image::PcProvider)
+        .unwrap();
+    let original = pc_config::launch::decode_portable(&image.config).unwrap();
+    for (case, expected) in [
+        ("kept", "session-kept"),
+        ("receipt", "receipts differ"),
+        ("legacy", "unknown field"),
+    ] {
+        let mut launch = original.clone();
+        if case == "kept" {
+            launch.records[0].name = "kept-system.upfj".into();
+        }
+        if case == "receipt" {
+            launch.content[0].sha256 = [0x99; 32];
+        }
+        let bytes = if case == "legacy" {
+            toml::to_string(&launch.config).unwrap().into_bytes()
+        } else {
+            pc_config::launch::encode(&launch).unwrap()
+        };
+        let blob = store.import(bytes.as_slice(), None).unwrap();
+        let mut manifest = image.manifest.clone();
+        manifest.config = image_store::Descriptor::new(
+            if case == "legacy" {
+                mt::CONFIG
+            } else {
+                mt::PC_LAUNCH_CONFIG
+            },
+            blob.digest,
+            blob.size,
+        );
+        let descriptor = store
+            .import_manifest_with_types(&manifest, pc_image::PAYLOAD_TYPES)
+            .unwrap();
+        let error = store
+            .resolve_descriptor(&descriptor, &pc_image::PcProvider)
+            .unwrap_err()
+            .to_string();
+        if case == "legacy" {
+            assert!(error.contains("zero disks without"), "{error}");
+        } else {
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+    assert_eq!(
+        store.tag_descriptor(&report.reference).unwrap().digest,
+        image.image.digest
+    );
+}
+
+struct PermutedPcCore;
+impl unemu_core_api::Core for PermutedPcCore {
+    fn description(&self) -> &unemu_core_api::CoreDescription {
+        unemu_pc_core::PcCore.description()
+    }
+    fn binding_slots(
+        &self,
+        platform: &str,
+        config: unemu_core_api::ConfigDocument<'_>,
+    ) -> Result<Vec<unemu_core_api::BindingSlot>, unemu_core_api::Error> {
+        unemu_pc_core::PcCore.binding_slots(platform, config)
+    }
+    fn compose(
+        &self,
+        platform: &str,
+        config: unemu_core_api::ConfigDocument<'_>,
+        facts: unemu_core_api::BindingFacts<'_>,
+    ) -> Result<unemu_core_api::PreparedConfig, unemu_core_api::Error> {
+        let mut uses = facts.uses.to_vec();
+        uses.reverse();
+        for usage in &mut uses {
+            usage.items.reverse();
+            for item in &mut usage.items {
+                item.roles.reverse();
+            }
+        }
+        unemu_pc_core::PcCore.compose(
+            platform,
+            config,
+            unemu_core_api::BindingFacts::new(&uses, facts.content),
+        )
+    }
+    fn validate(
+        &self,
+        platform: &str,
+        config: unemu_core_api::ConfigDocument<'_>,
+    ) -> Result<unemu_core_api::Validated, unemu_core_api::Error> {
+        unemu_pc_core::PcCore.validate(platform, config)
+    }
+    fn create(
+        &self,
+        request: &unemu_core_api::CreateRequest<'_>,
+    ) -> Result<Box<dyn unemu_core_api::Machine>, unemu_core_api::Error> {
+        unemu_pc_core::PcCore.create(request)
+    }
+}
+
+#[test]
+fn portable_template_retains_referenced_media_bytes_and_the_packages_terms() {
+    use recipe::{
+        build::{Outcome, Request},
+        Providers,
+    };
+    use unemu_core_api::{Core, RunLimit};
+    for source in &pc_image::template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            if pc_harness::test_support::fixtures::fixture(relative).is_none() {
+                return;
+            }
+        }
+    }
+    let temp = image_store::test_support::TempDir::new("portable-media");
+    let store = Store::open(temp.path().join("store"))
+        .unwrap()
+        .with_compatibility(pc_image::compat::compatibility(
+            pc_image::compat::NEXT_RELEASE,
+        ));
+    let path = template_recipe(&store, temp.path());
+    let (_, mut manifest, bytes) = media_package(&store, 42);
+    let terms = b"Synthetic media terms.\n".repeat(256);
+    let mut terms_descriptor = store
+        .import_payload(
+            terms.as_slice(),
+            mt::EXTRA,
+            terms.len() as u64,
+            None,
+            image_store::codec::MEDIA_PAYLOAD_TYPES,
+        )
+        .unwrap();
+    assert!(terms_descriptor.is_compressed());
+    let terms_digest = terms_descriptor.decoded_digest().unwrap();
+    image_store::license::mark(
+        &mut terms_descriptor,
+        Some(&image_store::license::Expression::parse("CC0-1.0").unwrap()),
+    );
+    manifest.layers[0]
+        .annotations
+        .insert(image_store::license::TERMS.into(), terms_digest.to_string());
+    let mut config = image_store::media_set::Config::decode(
+        &store
+            .read_verified(&manifest.config, image_store::MAX_SMALL_BLOB)
+            .unwrap(),
+    )
+    .unwrap();
+    config.extras.push(image_store::media_set::Extra {
+        blob: terms_digest,
+        filename: "TERMS.TXT".into(),
+        size: terms.len() as u64,
+        kind: image_store::media_set::ExtraKind::Document,
+        dos_name: Some("TERMS.TXT".into()),
+    });
+    manifest.layers.insert(1, terms_descriptor.clone());
+    let config = config.encode().unwrap();
+    let blob = store.import(config.as_slice(), None).unwrap();
+    manifest.config = image_store::Descriptor::new(mt::MEDIA_SET_CONFIG, blob.digest, blob.size);
+    let package = store
+        .import_manifest_with_types(&manifest, image_store::codec::MEDIA_PAYLOAD_TYPES)
+        .unwrap();
+    let old = template_support::bound_config();
+    let text = std::str::from_utf8(&old).unwrap();
+    let (before, after) = text.rsplit_once("empty = true").unwrap();
+    let new = format!("{before}inserted = {{ use = \"dos\", medium = \"disk-1\" }}{after}");
+    fs::write(temp.path().join("bound.toml"), &new).unwrap();
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace(Digest::of(&old).hex(), Digest::of(new.as_bytes()).hex())
+        .replace(
+            &format!("size = {}\n", old.len()),
+            &format!("size = {}\n", new.len()),
+        );
+    fs::write(
+        &path,
+        format!(
+            "{text}\n[use.dos]\nimage = \"private/media/ibm-pc/disks:1-r1\"\ndigest = \"{}\"\n",
+            package.digest
+        ),
+    )
+    .unwrap();
+    let providers = [&pc_image::recipe::PcRecipes as &dyn recipe::provider::Provider];
+    let result = recipe::template::build_path(
+        Request {
+            path: &path,
+            providers: Providers(&providers),
+            store: &store,
+            index: None,
+            store_read: None,
+            libraries: &mut [],
+            fetcher: None,
+            keep_as: None,
+            find_outputs: false,
+        },
+        &|_| Some(&unemu_pc_core::PcCore as &'static dyn Core),
+        None,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Outcome::Built(report) = result else {
+        panic!("{result:?}");
+    };
+    let image = store
+        .resolve(&report.reference, &pc_image::PcProvider)
+        .unwrap();
+    assert!(image.manifest.layers.contains(&manifest.layers[0]));
+    assert!(image.manifest.layers.contains(&terms_descriptor));
+    assert!(image.manifest.annotations["unemu.template.uses"].contains(&package.digest.to_string()));
+    let id = pc_image::machine::create(
+        &store,
+        &report.published.descriptor,
+        &report.reference,
+        Some("Media"),
+        None,
+    )
+    .unwrap();
+    let owner = pc_image::machine::own(&store, &id).unwrap();
+    let prepared =
+        pc_image::launch::prepare_machine(&owner, &unemu_pc_core::PcCore, "Media".into()).unwrap();
+    let mut machine = core_launch::start(&prepared.prepared).unwrap();
+    machine.run(RunLimit::steps(8)).unwrap();
+    machine.finish().unwrap();
+    drop(machine);
+    drop(owner);
+    let snapshot = pc_image::machine::export::open(&store, &id).unwrap();
+    let reader = snapshot.current(&store, "B:").unwrap();
+    assert_eq!(reader.size(), bytes.len() as u64);
+    let mut actual = [0; 512];
+    reader.read_at(0, &mut actual).unwrap();
+    assert_eq!(actual, [42; 512]);
+    drop(reader);
+    drop(snapshot);
+    let mut other = manifest.clone();
+    image_store::license::mark(
+        &mut other.layers[0],
+        Some(&image_store::license::Expression::parse("MIT").unwrap()),
+    );
+    let other = store
+        .import_manifest_with_types(&other, image_store::codec::MEDIA_PAYLOAD_TYPES)
+        .unwrap();
+    let conflicting = new.replace("type = \"1.2M\"", "type = \"1.44M\"").replacen(
+        "empty = true",
+        "inserted = { use = \"other\", medium = \"disk-1\" }",
+        1,
+    );
+    let conflicting = conflicting.replace("inserted = {", "write = \"readonly\"\ninserted = {");
+    fs::write(temp.path().join("bound.toml"), &conflicting).unwrap();
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace(
+            Digest::of(new.as_bytes()).hex(),
+            Digest::of(conflicting.as_bytes()).hex(),
+        )
+        .replace(
+            &format!("size = {}\n", new.len()),
+            &format!("size = {}\n", conflicting.len()),
+        )
+        .replace("version = \"1.3.0\"", "version = \"1.3.1\"");
+    fs::write(
+        &path,
+        format!(
+            "{text}\n[use.other]\nimage = \"private/media/ibm-pc/other:1-r1\"\ndigest = \"{}\"\n",
+            other.digest
+        ),
+    )
+    .unwrap();
+    let result = recipe::template::build_path(
+        Request {
+            path: &path,
+            providers: Providers(&providers),
+            store: &store,
+            index: None,
+            store_read: None,
+            libraries: &mut [],
+            fetcher: None,
+            keep_as: None,
+            find_outputs: false,
+        },
+        &|_| Some(&unemu_pc_core::PcCore as &'static dyn Core),
+        None,
+        &mut |_| {},
+    )
+    .unwrap();
+    let Outcome::Failed { error, .. } = result else {
+        panic!("{result:?}");
+    };
+    assert!(error.contains("conflicting descriptors"), "{error}");
+    assert!(store
+        .tag_descriptor("private/machines/ibm-pc/bound:1.3.1")
+        .is_err());
 }

@@ -25,6 +25,23 @@ pub trait Provider {
         Err("this platform cannot read template packages".into())
     }
 
+    /// The core document type of verified template input bytes.
+    fn template_config_type(&self) -> Result<&str, String> {
+        Err("this platform cannot compose templates".into())
+    }
+
+    /// Store the prepared document and its runtime and archival closure, then tag last.
+    fn publish_template(
+        &self,
+        _store: &image_store::Store,
+        _recipe: &crate::model::Recipe,
+        _prepared: &unemu_core_api::PreparedConfig,
+        _slots: &[unemu_core_api::BindingSlot],
+        _facts: &crate::template::Facts,
+    ) -> Result<crate::build::Published, String> {
+        Err("this platform cannot publish templates".into())
+    }
+
     /// The core-owned rating of the platform spelling a recipe envelope writes.
     fn core_platform_release(
         &self,

@@ -482,6 +482,9 @@ pub(crate) fn nvram(store: &Store, n: &Nvram, image: &ResolvedImage) -> Result<D
 pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Result<()> {
     let mut seen = BTreeSet::new();
     for m in &config.media {
+        if m.zero.is_some() && m.head.is_none() {
+            continue;
+        }
         if !seen.insert(&m.head) {
             continue;
         }

@@ -1655,10 +1655,18 @@ only the declared item identities and serves their verified immutable
 bytes. The recipe engine supplies these contract facts without parsing PC
 hardware. Config bytes remain unchanged and are rechecked by size and hash.
 
-Construction and machine locks remain unavailable in this build. After
-planning, acquisition and fact extraction succeed, build refuses with
-`machine templates are not built yet`. It does not call composition or
-construct disk or machine images.
+Machine drafts now proceed from verified facts through the selected core's
+`binding_slots` and `compose` operations. The engine compares disk declarations
+with zero-disk slots by item id and exact size, refuses missing or unused uses,
+and passes the config input bytes unchanged with the provider's declared media
+type. PC packaging stores `PreparedConfig.config` unchanged as a portable launch,
+retaining runtime content, each selected ROM's package source archive and rights
+texts, and package provenance. Unique unlocked layers are sorted by stored
+digest; conflicting descriptors fail. A document-owned zero disk needs no base
+blob, and construction never executes a guest. Drafts tag `<name>:<version>`.
+Machine locks, recipe artifact publication and compatibility-marker inheritance
+remain pending: pinned machine recipes and their `--keep-as` builds are refused
+explicitly until machine lock support lands.
 
 ## 7. Recipes as registry artifacts
 

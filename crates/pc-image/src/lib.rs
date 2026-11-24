@@ -172,12 +172,27 @@ fn invalid(message: impl Into<String>) -> Error {
 fn decode(table: toml::Table) -> Result<Config> {
     let config = Config::decode(table)?;
     for medium in &config.media {
-        medium_head(medium)?;
+        if medium.head.is_none() || medium.zero.is_some() {
+            return Err(invalid(format!(
+                "medium {:?}: document-owned zero disks without a content head are not supported",
+                medium.id
+            )));
+        }
     }
     Ok(config)
 }
 
 fn medium_head(medium: &pc_config::image::Medium) -> Result<pc_config::image::Digest> {
+    if let Some(zero) = &medium.zero {
+        if medium.head.is_none() {
+            let g = &medium.geometry;
+            let base = crate::zero::ZeroBase::new(g.cylinders, g.heads, g.sectors)?;
+            if base.byte_len() != zero.size {
+                return Err(invalid("zero disk size differs from geometry"));
+            }
+            return Digest::of(&base.encode()?).to_config();
+        }
+    }
     medium
         .head
         .filter(|_| medium.zero.is_none())

@@ -21,9 +21,7 @@
 //! it copies a stored CMOS image afresh.
 
 use crate::ConfigDigest;
-use crate::{
-    decode, invalid, revision, workspace, Config, NvramMode, Policy, Result, CMOS, PAYLOAD_TYPES,
-};
+use crate::{invalid, revision, workspace, Config, NvramMode, Policy, Result, CMOS, PAYLOAD_TYPES};
 use image_store::{
     machine::{validate_name, Machine, Machines, Origin, PendingInsert},
     workspace::Workspace,
@@ -695,12 +693,8 @@ fn image_config(store: &Store, image: &Descriptor) -> Result<(Manifest, Config)>
     )?;
     let manifest = Manifest::decode_with_types(&bytes, PAYLOAD_TYPES)?;
     let bytes = store.read_verified(&manifest.config, MAX_SMALL_BLOB)?;
-    let config: Config = decode(
-        std::str::from_utf8(&bytes)
-            .map_err(|e| invalid(e.to_string()))?
-            .parse()
-            .map_err(|e: toml::de::Error| invalid(e.to_string()))?,
-    )?;
+    let config =
+        crate::provider::stored_config(&bytes, &manifest.config.media_type, &manifest.layers)?;
     Ok((manifest, config))
 }
 

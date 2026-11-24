@@ -75,6 +75,21 @@ impl Provider for PcRecipes {
         }
     }
 
+    fn template_config_type(&self) -> Result<&str, String> {
+        Ok(pc_config::launch::MEDIA_TYPE)
+    }
+
+    fn publish_template(
+        &self,
+        store: &image_store::Store,
+        recipe: &recipe::model::Recipe,
+        prepared: &unemu_core_api::PreparedConfig,
+        slots: &[unemu_core_api::BindingSlot],
+        facts: &recipe::template::Facts,
+    ) -> Result<recipe::build::Published, String> {
+        template_facts::publish(store, recipe, prepared, slots, facts).map_err(|e| e.to_string())
+    }
+
     fn core_platform_release(
         &self,
         platform: &str,

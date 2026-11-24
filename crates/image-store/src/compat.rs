@@ -92,7 +92,7 @@ pub const BASELINE: AppVersion = AppVersion::new(0, 0, 1);
 pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 6);
 /// The newest shared front-end row. Composition also includes the PC provider
 /// and recipe parser's front-end maxima, independently of every core table.
-pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
+pub const NEWEST_ROW: AppVersion = NEXT_RELEASE;
 /// The frozen pre-extraction release line. It is never the store package version.
 pub const EXTRACTION_BASELINE: AppVersion = AppVersion::new(0, 0, 3);
 
@@ -1033,8 +1033,8 @@ mod tests {
         assert!(!Requirement::Release(AppVersion::new(0, 0, 3)).met_by(at));
         assert!(!Requirement::Invalid("next".into()).met_by(at));
         assert!(!Requirement::Invalid("next".into()).met_by(AppVersion::new(999, 0, 0)));
-        // A development build whose tables name a newer release reads it.
-        assert!(level() >= PACKAGE && level() >= NEWEST_ROW);
+        // Front-end decoder rows do not raise the independent core level.
+        assert!(level() >= PACKAGE && levels().frontend >= NEWEST_ROW);
         let this = level();
         assert!(Requirement::Release(this)
             .check("x:1", Component::Core, Some(level()))

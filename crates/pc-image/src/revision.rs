@@ -48,12 +48,9 @@ impl Source {
         if manifest.artifact_type() != mt::MACHINE || !crate::is_pc(manifest.platform()?) {
             return Err(invalid("not a PC machine image"));
         }
-        let text = String::from_utf8(store.read_verified(&manifest.config, MAX_SMALL_BLOB)?)
-            .map_err(|e| invalid(e.to_string()))?;
-        let config: Config = decode(
-            text.parse::<Table>()
-                .map_err(|e: toml::de::Error| invalid(e.to_string()))?,
-        )?;
+        let bytes = store.read_verified(&manifest.config, MAX_SMALL_BLOB)?;
+        let config =
+            crate::provider::stored_config(&bytes, &manifest.config.media_type, &manifest.layers)?;
         let cmos = match &config.nvram {
             Some(nvram) => {
                 let d = crate::descriptor(&manifest.layers, &nvram.head.store()?, CMOS)?;
@@ -265,14 +262,6 @@ impl BlobSource for Pending<'_> {
             None => self.blobs.read_verified(descriptor, limit),
         }
     }
-}
-
-fn config_table(config: &Config) -> Result<Table> {
-    toml::Value::try_from(config)
-        .map_err(|e| invalid(e.to_string()))?
-        .as_table()
-        .cloned()
-        .ok_or_else(|| invalid("config is not a table"))
 }
 
 fn drive_letter(kind: &str, unit: u8) -> String {
@@ -626,8 +615,8 @@ pub(crate) fn lower_revision(
         .cloned()
         .chain(firmware_layers(&bound))
         .collect();
-    let lowered = crate::provider::prepare(decode(config_table(&config)?)?, &descriptors, store)?;
-    let old = crate::provider::prepare(decode(config_table(source)?)?, layers, store)?;
+    let lowered = crate::provider::prepare(config.clone(), &descriptors, store)?;
+    let old = crate::provider::prepare(source.clone(), layers, store)?;
     let reset = cmos_layout_changes(&old.machine, &lowered.machine);
     // What only the ROM bytes decide, such as a BIOS that types its fixed disks
     // from CMOS, refuses the machine here, unless a stored CMOS image of the
@@ -886,7 +875,13 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
         blobs: store,
         extra: &pending,
     };
-    let references = PcProvider.validate(&config_table(&config)?, &descriptors, &overlay)?;
+    let portable = source.manifest.config.media_type == pc_config::launch::MEDIA_TYPE;
+    let bytes = crate::provider::stored_bytes(&config, portable, &descriptors, &overlay)?;
+    let table = std::str::from_utf8(&bytes)
+        .map_err(|e| invalid(e.to_string()))?
+        .parse::<Table>()
+        .map_err(|e| invalid(e.to_string()))?;
+    let references = PcProvider.validate(&table, &descriptors, &overlay)?;
     let mut seen = BTreeSet::new();
     let mut layers = Vec::new();
     for digest in references {
@@ -916,9 +911,9 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
             d.clone()
         });
     }
-    let bytes = toml::to_string(&config)
-        .map_err(|e| invalid(e.to_string()))?
-        .into_bytes();
+    if portable {
+        layers.sort_by(|a, b| a.digest.cmp(&b.digest));
+    }
     if bytes.len() as u64 > MAX_SMALL_BLOB {
         return Err(invalid("configuration exceeds 1 MiB"));
     }
@@ -926,7 +921,11 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
         return Err(invalid("the settings are unchanged"));
     }
     let configuration = generated(Descriptor::new(
-        mt::CONFIG,
+        if portable {
+            pc_config::launch::MEDIA_TYPE
+        } else {
+            mt::CONFIG
+        },
         Digest::of(&bytes),
         bytes.len() as u64,
     ));

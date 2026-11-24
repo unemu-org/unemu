@@ -120,7 +120,8 @@ Use a standard **OCI image manifest** as an artifact, following the
 Image Manifest, Content Descriptors and Image Layout sections. The JSON envelope
 has `schemaVersion = 2`, `mediaType = "application/vnd.oci.image.manifest.v1+json"`
 and `artifactType = "application/vnd.unemu.machine.v1"`. Its `config`
-descriptor points to the version-1 machine configuration TOML. `layers` lists
+descriptor points to a version-1 machine configuration TOML or the PC core's
+portable launch document. `layers` lists
 exactly the closure of that configuration: every firmware blob, medium, disk
 base, sealed layer descriptor, sector pack, platform NVRAM and optional saved state
 reachable from it, including catalogue media that are not initially inserted,
@@ -128,12 +129,24 @@ followed by the metadata blob and its artwork (§2.1). A manifest with a missing
 or an unreferenced descriptor is rejected. These are artifact payloads, not
 container filesystem tar layers.
 
+Recipe-built portable PC launches retain their exact composed config bytes.
+Their layers include runtime content plus the corresponding firmware source
+archives and rights texts from each selected package; provenance records package
+manifest digests. Unlocked layers, including metadata, are sorted by stored
+digest. Readers verify this closure independently of order for the portable
+config type; legacy configs retain their existing ordered closure and bytes.
+Native zero disks have no base blob or content row. Starts derive their complete
+zero-byte SHA-256 identity and use the existing sector overlay and journal;
+session record augmentation is transient. A save with written sectors creates a
+new zero-rooted layer without changing the original config or base.
+
 | Media type | Role |
 |---|---|
 | `application/vnd.oci.image.manifest.v1+json` | Standard OCI manifest envelope. |
 | `application/vnd.oci.image.index.v1+json` | Standard OCI index for local image references. |
 | `application/vnd.unemu.machine.v1` | Manifest `artifactType`; identifies a whole machine. |
 | `application/vnd.unemu.machine.config.v1+toml` | Required platform and platform-owned resolved hardware, firmware/media bindings, catalogues, selections and policies. |
+| `application/vnd.unemu.pc.launch.v1+toml` | Portable PC launch config returned by core composition, with verified content receipts and document-owned zero disks. Session-kept records cannot be stored. |
 | `application/vnd.unemu.metadata.v1+json` | Required machine platform and versioned game/software catalogue, with independent metadata and launch commands per title. |
 | `image/png`, `image/jpeg` | Cover art and screenshots referenced from the metadata blob. |
 | `application/vnd.unemu.firmware.v1` | Exact ROM/chip/container payload bytes; also the firmware-package manifest `artifactType` (§5.3), distinguished by descriptor context. |

@@ -506,6 +506,7 @@ pub(crate) fn publish_machine(
     store.check_tag_target(tag, expected, None)?;
     let resolved = crate::provider::load_pinned(store, &old.image, true, true)?;
     let image = resolved.image;
+    let portable = image.manifest.config.media_type == pc_config::launch::MEDIA_TYPE;
     let mut config = resolved.config;
     // The new image names the platform by its current id, also when the image
     // it derives from names the retired one.
@@ -563,10 +564,32 @@ pub(crate) fn publish_machine(
             .get(&crate::medium_head(m)?)
             .ok_or_else(|| invalid("missing verified medium"))?;
         let head_digest = crate::medium_head(m)?.store()?;
-        let old_head = descriptors
-            .iter()
-            .find(|d| d.names(&head_digest))
-            .ok_or_else(|| invalid("missing medium head"))?;
+        let native = m.zero.is_some();
+        let native_bytes = if native {
+            Some(
+                crate::zero::ZeroBase::new(
+                    m.geometry.cylinders,
+                    m.geometry.heads,
+                    m.geometry.sectors,
+                )?
+                .encode()?,
+            )
+        } else {
+            None
+        };
+        let old_head = if let Some(bytes) = &native_bytes {
+            crate::generated(Descriptor::new(
+                DISK_ZERO,
+                Digest::of(bytes),
+                bytes.len() as u64,
+            ))
+        } else {
+            descriptors
+                .iter()
+                .find(|d| d.names(&head_digest))
+                .ok_or_else(|| invalid("missing medium head"))?
+                .clone()
+        };
         let flatten_disk = flatten
             && matches!(
                 old_head.decoded_media_type(),
@@ -588,8 +611,14 @@ pub(crate) fn publish_machine(
             .map(|overlay| overlay.has_changes())
             .transpose()?
             .unwrap_or(false);
-        if !changed && !flatten_disk {
+        if !changed && (!flatten_disk || native) {
             continue;
+        }
+        if let Some(bytes) = &native_bytes {
+            store.import(bytes.as_slice(), Some(&old_head.digest))?;
+            descriptors.push(old_head.clone());
+            m.zero = None;
+            m.head = Some(old_head.digest.to_config()?);
         }
         let final_disk: &dyn SectorSource = overlay
             .as_ref()
@@ -688,11 +717,11 @@ pub(crate) fn publish_machine(
             descriptors.push(classify(Descriptor::new(CMOS, blob.digest, blob.size)));
         }
     }
-    let table = toml::Value::try_from(&config)
+    let config_bytes = crate::provider::stored_bytes(&config, portable, &descriptors, store)?;
+    let table = std::str::from_utf8(&config_bytes)
         .map_err(|e| invalid(e.to_string()))?
-        .as_table()
-        .cloned()
-        .ok_or_else(|| invalid("config is not a table"))?;
+        .parse()
+        .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
     let refs = PcProvider.validate(&table, &descriptors, store)?;
     let mut seen = std::collections::BTreeSet::new();
     let mut layers = Vec::new();
@@ -725,11 +754,17 @@ pub(crate) fn publish_machine(
         });
     }
     // The configuration is this program's own file: open, never re-marked.
-    let config_bytes = toml::to_string(&config).map_err(|e| invalid(e.to_string()))?;
+    if portable {
+        layers.sort_by(|a, b| a.digest.cmp(&b.digest));
+    }
     let configuration = crate::generated(stored(
         store,
-        mt::CONFIG,
-        config_bytes.as_bytes(),
+        if portable {
+            pc_config::launch::MEDIA_TYPE
+        } else {
+            mt::CONFIG
+        },
+        config_bytes.as_slice(),
         &mut hook,
     )?);
     let sources = crate::revision::firmware_sources(&packages, &image.manifest, &layers, &bound)?;
@@ -750,7 +785,7 @@ pub(crate) fn publish_machine(
     )?;
     crate::compat::stamp(
         &mut manifest,
-        config_bytes.as_bytes(),
+        config_bytes.as_slice(),
         inherited,
         None,
         crate::compat::source_levels(store),
@@ -928,7 +963,11 @@ fn complete(
         store,
         &transaction.proposed,
         &current.retention,
-        &parse::<Config>(&image.config)?,
+        &crate::provider::stored_config(
+            &image.config,
+            &image.manifest.config.media_type,
+            &image.manifest.layers,
+        )?,
     )?;
     hook(PublicationStep::RetentionStored)?;
 

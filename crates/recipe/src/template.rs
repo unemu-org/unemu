@@ -7,7 +7,11 @@ use crate::{
     plan::{Plan, Status},
 };
 use image_store::{BlobSource, Descriptor, Digest, Manifest, Store};
-use unemu_core_api::{BindingUse, Content, ContentSource, Core, Error, ErrorKind};
+use std::collections::{BTreeMap, BTreeSet};
+use unemu_core_api::{
+    BindingFacts, BindingKind, BindingSlot, BindingUse, ConfigDocument, Content, ContentSource,
+    Core, Error, ErrorKind, PreparedConfig,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsePlan {
@@ -146,11 +150,81 @@ pub trait Acquire {
 /// Owned verified facts, reusable by later composition without reopening a tag.
 pub struct Facts {
     pub uses: Vec<BindingUse>,
-    sources: Vec<Box<dyn ContentSource>>,
+    sources: BTreeMap<String, Box<dyn ContentSource>>,
 }
+impl Facts {
+    pub fn new(packages: Vec<VerifiedUse>) -> Self {
+        let (uses, sources) = packages
+            .into_iter()
+            .map(|p| {
+                let id = p.facts.id.clone();
+                (p.facts, (id, p.content))
+            })
+            .unzip();
+        Self { uses, sources }
+    }
+}
+
+/// Discover requirements without interpreting core syntax, then compose using
+/// exactly the verified package facts and their restricted content source.
+pub fn compose(
+    core: &dyn Core,
+    platform: &str,
+    config: ConfigDocument<'_>,
+    disks: &[(String, u64)],
+    facts: &Facts,
+) -> Result<(PreparedConfig, Vec<BindingSlot>), String> {
+    let slots = core
+        .binding_slots(platform, config)
+        .map_err(|e| e.to_string())?;
+    let mut remaining: BTreeMap<_, _> = disks
+        .iter()
+        .map(|(id, size)| (id.as_str(), *size))
+        .collect();
+    let declared: BTreeSet<_> = facts.uses.iter().map(|u| u.id.as_str()).collect();
+    let mut used = BTreeSet::new();
+    for slot in &slots {
+        match slot.kind {
+            BindingKind::ZeroDisk => {
+                let id = slot
+                    .item_id
+                    .as_deref()
+                    .ok_or("zero disk slot has no item id")?;
+                let size = remaining
+                    .remove(id)
+                    .ok_or_else(|| format!("missing disk declaration: {id}"))?;
+                if Some(size) != slot.size {
+                    return Err(format!("disk {id}: size differs from binding slot"));
+                }
+            }
+            BindingKind::FirmwareRom | BindingKind::Medium => {
+                let id = slot.use_id.as_deref().ok_or("package slot has no use id")?;
+                if !declared.contains(id) {
+                    return Err(format!("undeclared use: {id}"));
+                }
+                used.insert(id);
+            }
+            _ => return Err("unsupported binding kind".into()),
+        }
+    }
+    if let Some(id) = remaining.keys().next() {
+        return Err(format!("unused disk declaration: {id}"));
+    }
+    if let Some(id) = declared.difference(&used).next() {
+        return Err(format!("unused use: {id}"));
+    }
+    let prepared = core
+        .compose(platform, config, BindingFacts::new(&facts.uses, facts))
+        .map_err(|e| e.to_string())?;
+    Ok((prepared, slots))
+}
+
 impl ContentSource for Facts {
     fn open(&self, sha256: &[u8; 32], size: u64) -> Result<Content, Error> {
-        for (usage, source) in self.uses.iter().zip(&self.sources) {
+        for usage in &self.uses {
+            let Some(source) = self.sources.get(&usage.id) else {
+                continue;
+            };
             if usage
                 .items
                 .iter()
@@ -297,7 +371,7 @@ pub fn prepare(
     };
     let mut facts = Facts {
         uses: Vec::new(),
-        sources: Vec::new(),
+        sources: BTreeMap::new(),
     };
     for usage in &mut plan.uses {
         if !usage.present {
@@ -311,8 +385,10 @@ pub fn prepare(
             acquire.acquire(request.store, usage, family)?;
         }
         let verified = provider.template_use(request.store, usage)?;
+        facts
+            .sources
+            .insert(verified.facts.id.clone(), verified.content);
         facts.uses.push(verified.facts);
-        facts.sources.push(verified.content);
         usage.present = true;
     }
     for output in &mut plan.outputs {
@@ -325,22 +401,94 @@ pub fn prepare(
     })
 }
 
-/// Dispatch existing recipes unchanged and stop machine builds after verified facts.
+/// Dispatch existing recipes unchanged; machine drafts compose and tag through
+/// their provider. Pinned machine builds need the machine lock implementation.
 pub fn build_path(
     request: build::Request<'_>,
     core_for: &dyn Fn(&str) -> Option<&'static dyn Core>,
     acquire: Option<&dyn Acquire>,
     log: &mut dyn FnMut(&str),
 ) -> std::io::Result<build::Outcome> {
-    let machine = matches!(crate::load(request.path, request.providers)?, crate::Opened::Recipe(recipe, _, _) if recipe.kind == crate::model::Kind::Machine);
-    if !machine {
-        return build::build_path(request, log);
+    let recipe = match crate::load(request.path, request.providers)? {
+        crate::Opened::Recipe(recipe, _, _) if recipe.kind == crate::model::Kind::Machine => recipe,
+        _ => return build::build_path(request, log),
+    };
+    if request.keep_as.is_some() {
+        return Err(std::io::Error::other(
+            "machine template --keep-as requires machine lock support",
+        ));
     }
+    if recipe.identity.digest.is_some() {
+        return Err(std::io::Error::other(
+            "pinned machine recipes require machine lock support",
+        ));
+    }
+    let family = image_store::platform::canonical(
+        recipe
+            .identity
+            .platform
+            .as_ref()
+            .map(|p| p.value.as_str())
+            .unwrap_or_default(),
+    );
+    let provider = request
+        .providers
+        .get(family)
+        .ok_or_else(|| std::io::Error::other("no template provider"))?;
+    let store = request.store;
     match prepare(request, core_for, acquire, log).map_err(std::io::Error::other)? {
         Prepared::Missing(plan) => Ok(build::Outcome::Missing(plan)),
-        Prepared::Ready { plan, .. } => Ok(build::Outcome::Failed {
+        Prepared::Ready {
             plan,
-            error: "machine templates are not built yet".into(),
-        }),
+            facts,
+            config,
+        } => {
+            let result = (|| {
+                let core = core_for(family).ok_or("no template core")?;
+                let document = ConfigDocument::new(provider.template_config_type()?, &config);
+                let (prepared, slots) = compose(core, family, document, &plan.disks, &facts)?;
+                provider.publish_template(store, &recipe, &prepared, &slots, &facts)
+            })();
+            match result {
+                Err(error) => Ok(build::Outcome::Failed { plan, error }),
+                Ok(published) => {
+                    let reference = format!(
+                        "{}:{}",
+                        recipe
+                            .identity
+                            .name
+                            .as_ref()
+                            .map(|n| n.value.as_str())
+                            .unwrap_or_default(),
+                        recipe
+                            .identity
+                            .version
+                            .as_ref()
+                            .map(|v| v.value.as_str())
+                            .unwrap_or_default()
+                    );
+                    Ok(build::Outcome::Built(Box::new(build::Report {
+                        plan: *plan,
+                        reference,
+                        published,
+                        kept: recipe
+                            .template
+                            .as_ref()
+                            .and_then(|t| t.config.as_ref())
+                            .map(|id| build::Kept {
+                                input: id.value.clone(),
+                                how: "composed into the stored machine config".into(),
+                            })
+                            .into_iter()
+                            .collect(),
+                        attachments: Vec::new(),
+                        locked: false,
+                        drift: Vec::new(),
+                        outputs: BTreeSet::new(),
+                        lock_rebuilt: false,
+                    })))
+                }
+            }
+        }
     }
 }

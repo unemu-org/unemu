@@ -1353,7 +1353,7 @@ fn machine_fetch_uses_digest_despite_moved_tag_and_preserves_descriptor_order() 
     let (code, output, errors) = upcli(&words(&t, &path, &["--fetch"]));
     assert_eq!(code, 1, "{output}{errors}");
     assert!(
-        format!("{output}{errors}").contains("machine templates are not built yet"),
+        format!("{output}{errors}").contains("not built:"),
         "{output}{errors}"
     );
     let log = registry.log();
@@ -1384,7 +1384,7 @@ fn machine_fetch_uses_digest_despite_moved_tag_and_preserves_descriptor_order() 
     registry.clear_log();
     let (code, output, errors) = upcli(&words(&t, &path, &[]));
     assert_eq!(code, 1, "{output}{errors}");
-    assert!(format!("{output}{errors}").contains("machine templates are not built yet"));
+    assert!(format!("{output}{errors}").contains("not built:"));
     assert!(registry.log().is_empty());
 }
 
@@ -1506,4 +1506,61 @@ fn machine_registry_fixture_is_portable_and_selects_the_configured_registry() {
         }
         previous = Some(text);
     }
+}
+
+#[path = "../../pc-image/tests/support/template.rs"]
+mod template_support;
+
+#[test]
+fn machine_draft_cli_builds_and_tags_portable_config_without_guest_execution() {
+    for source in &pc_image::template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            if pc_harness::test_support::fixtures::fixture(relative).is_none() {
+                return;
+            }
+        }
+    }
+    let t = Temp::new("machine-draft");
+    let store = image_store::Store::open(t.path("store"))
+        .unwrap()
+        .with_compatibility(pc_image::compat::compatibility(
+            pc_image::compat::NEXT_RELEASE,
+        ));
+    let path = template_support::template_recipe(&store, &t.0);
+    let (code, output, errors) = upcli(&words(&t, &path, &[]));
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(errors.is_empty(), "{errors}");
+    assert!(
+        output.contains("built private/machines/ibm-pc/bound:1.3.0"),
+        "{output}"
+    );
+    let image = store
+        .resolve("private/machines/ibm-pc/bound:1.3.0", &pc_image::PcProvider)
+        .unwrap();
+    assert_eq!(
+        image.manifest.config.media_type,
+        image_store::media_type::PC_LAUNCH_CONFIG
+    );
+    assert!(!store.root().join("workspaces").exists());
+    let (code, output, errors) = upcli(&words(&t, &path, &[]));
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(output.contains("already built"), "{output}");
+    let text = fs::read_to_string(&path).unwrap().replace(
+        "version = \"1.3.0\"",
+        &format!("version = \"1.3.0\"\ndigest = \"{}\"", image.image.digest),
+    );
+    fs::write(&path, text).unwrap();
+    let (code, output, errors) = upcli(&words(&t, &path, &[]));
+    assert_ne!(code, 0, "{output}{errors}");
+    assert!(
+        format!("{output}{errors}").contains("pinned machine recipes require machine lock support"),
+        "{output}{errors}"
+    );
+    assert_eq!(
+        store
+            .tag_descriptor("private/machines/ibm-pc/bound:1.3.0")
+            .unwrap()
+            .digest,
+        image.image.digest
+    );
 }

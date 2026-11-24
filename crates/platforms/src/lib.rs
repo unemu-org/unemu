@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn compatibility_uses_the_core_description_and_injected_application_version() {
         use image_store::compat::AppVersion as V;
-        for (core_version, frontend) in [("0.0.5", 9), ("0.0.9", 5)] {
+        for (core_version, frontend) in [("0.0.5", 9), ("0.0.9", 7)] {
             let core = Described(
                 CoreDescription::new(ContractVersion::new(0, 6), "home", "Home", core_version)
                     .with_platforms(&HOME),

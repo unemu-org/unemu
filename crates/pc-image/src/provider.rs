@@ -121,13 +121,9 @@ impl ConfigValidator for PcProvider {
         descriptors: &[Descriptor],
         blobs: &dyn BlobSource,
     ) -> image_store::Result<Vec<Digest>> {
-        prepare(
-            decode(config.clone()).map_err(store_error)?,
-            descriptors,
-            blobs,
-        )
-        .map(|p| p.references)
-        .map_err(store_error)
+        prepare_table(config, descriptors, blobs)
+            .map(|p| p.references)
+            .map_err(store_error)
     }
     fn required_releases(
         &self,
@@ -356,6 +352,9 @@ fn store_half<'a>(
             if !first_use && medium.policy != Policy::Readonly {
                 return Ok(stored);
             }
+            if medium.zero.is_some() && medium.head.is_none() {
+                continue;
+            }
             let head_digest = crate::medium_head(medium)?.store()?;
             let payload_type = if ide {
                 let head = descriptors
@@ -471,11 +470,103 @@ impl ContentSource for StoreContent<'_> {
 /// Resolve a verified image to assembly input. Journal outputs use only the caller's
 /// session directory; bases remain immutable blobs in the store. No session is created.
 fn config_from_image(image: &image_store::ResolvedImage) -> Result<Config> {
-    let table: toml::Table = std::str::from_utf8(&image.config)
+    stored_config(
+        &image.config,
+        &image.manifest.config.media_type,
+        &image.manifest.layers,
+    )
+}
+
+pub(crate) fn stored_config(
+    bytes: &[u8],
+    media_type: &str,
+    descriptors: &[Descriptor],
+) -> Result<Config> {
+    let table: toml::Table = std::str::from_utf8(bytes)
         .map_err(|e| invalid(e.to_string()))?
         .parse()
         .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
-    decode(table)
+    if media_type == launch::MEDIA_TYPE {
+        portable(&table, descriptors).map(|l| l.config)
+    } else {
+        decode(table)
+    }
+}
+
+pub(crate) fn stored_bytes(
+    config: &Config,
+    portable: bool,
+    descriptors: &[Descriptor],
+    blobs: &dyn BlobSource,
+) -> Result<Vec<u8>> {
+    if portable {
+        Ok(launch::encode_portable(&export_document(
+            config,
+            descriptors,
+            blobs,
+        )?)?)
+    } else {
+        Ok(toml::to_string(config)
+            .map_err(|e| invalid(e.to_string()))?
+            .into_bytes())
+    }
+}
+
+fn portable(table: &toml::Table, descriptors: &[Descriptor]) -> Result<launch::Launch> {
+    let bytes = toml::to_string(table).map_err(|e| invalid(e.to_string()))?;
+    let mut document = launch::decode_portable(bytes.as_bytes())?;
+    // Composition omits archival links. Descriptor rights remain authoritative
+    // for storage closure, while the runtime document stays unchanged on disk.
+    for rom in &mut document.config.firmware {
+        let descriptor = descriptor(descriptors, &rom.blob.store()?, mt::FIRMWARE)?;
+        if rom.source_archive.is_none() {
+            rom.source_archive = descriptor
+                .annotations
+                .get(image_store::license::SOURCE)
+                .map(|link| {
+                    link.parse()
+                        .map_err(|e: pc_config::image::DigestError| invalid(e.to_string()))
+                })
+                .transpose()?;
+        }
+    }
+    Ok(document)
+}
+
+fn prepare_table(
+    table: &toml::Table,
+    descriptors: &[Descriptor],
+    blobs: &dyn BlobSource,
+) -> Result<Prepared> {
+    if !table.contains_key("content") && !table.contains_key("record") {
+        return prepare(decode(table.clone())?, descriptors, blobs);
+    }
+    let document = portable(table, descriptors)?;
+    let mut prepared = prepare(document.config.clone(), descriptors, blobs)?;
+    let stored = store_half(&document.config, descriptors, blobs)?;
+    let expected = validation_launch(&document.config, &stored);
+    let rows = |rows: &[launch::ContentRow]| -> BTreeMap<_, _> {
+        rows.iter()
+            .map(|r| (r.digest, (r.sha256, r.size)))
+            .collect()
+    };
+    if rows(&document.content) != rows(&expected.content) {
+        return Err(invalid(
+            "portable content receipts differ from stored content",
+        ));
+    }
+    prepared.references = descriptors
+        .iter()
+        .filter(|d| {
+            prepared.references.iter().any(|r| d.names(r))
+                || matches!(
+                    d.decoded_media_type(),
+                    mt::TAR | mt::ZIP | mt::EXTRA | mt::MARKDOWN
+                )
+        })
+        .map(|d| d.decoded_digest())
+        .collect::<image_store::Result<_>>()?;
+    Ok(prepared)
 }
 /// Verified launch bases keyed by the path each drive names; zero-rooted heads
 /// also keep their parts so a launch can move them to another thread.
@@ -515,12 +606,7 @@ pub(crate) fn load_pinned(
             descriptors: &[Descriptor],
             blobs: &dyn BlobSource,
         ) -> image_store::Result<Vec<Digest>> {
-            let prepared = prepare(
-                decode(table.clone()).map_err(store_error)?,
-                descriptors,
-                blobs,
-            )
-            .map_err(store_error)?;
+            let prepared = prepare_table(table, descriptors, blobs).map_err(store_error)?;
             let refs = prepared.references.clone();
             self.0.replace(Some((prepared, BTreeMap::new())));
             Ok(refs)
@@ -530,6 +616,7 @@ pub(crate) fn load_pinned(
             image: &image_store::ResolvedImage,
             store: &Store,
         ) -> image_store::Result<()> {
+            config_from_image(image).map_err(store_error)?;
             let mut capture = self.0.borrow_mut();
             let (prepared, bases) = capture
                 .as_mut()
@@ -630,6 +717,9 @@ pub(crate) fn resolve_pinned(
         let disk = bases
             .get(&crate::medium_head(medium)?)
             .ok_or_else(|| invalid("missing prepared disk"))?;
+        if medium.zero.is_some() {
+            continue;
+        }
         let row = document
             .content
             .iter_mut()

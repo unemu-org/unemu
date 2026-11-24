@@ -224,7 +224,10 @@ pub fn listed_packages<'a>(
 }
 
 fn machine_release(manifest: &Manifest, table: &toml::Table) -> image_store::Result<AppVersion> {
-    let mut release = from_core(pc_config::compat::machine(table).map_err(store_error_config)?);
+    let mut table = table.clone();
+    table.remove("content");
+    table.remove("record");
+    let mut release = from_core(pc_config::compat::machine(&table).map_err(store_error_config)?);
     for layer in &manifest.layers {
         if layer.decoded_media_type() == mt::FIRMWARE {
             release = release.max(from_core(

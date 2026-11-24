@@ -33,10 +33,8 @@ pub fn check(
     }
     stop()?;
     let bytes = store.read_verified(&manifest.config, MAX_SMALL_BLOB)?;
-    let config: Config = decode(
-        toml::from_str(std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?)
-            .map_err(|e| invalid(format!("{e}")))?,
-    )?;
+    let config =
+        crate::provider::stored_config(&bytes, &manifest.config.media_type, &manifest.layers)?;
     if config.schema != 1 || !crate::is_pc(&config.platform) {
         return Err(invalid("config version or platform mismatch"));
     }
@@ -61,29 +59,30 @@ pub fn check(
     for m in &config.media {
         stop()?;
         let head_digest = crate::medium_head(m)?.store()?;
-        let head = manifest
-            .layers
-            .iter()
-            .find(|d| d.names(&head_digest))
-            .ok_or_else(|| invalid("missing disk head"))?;
-        let members = if matches!(
-            head.decoded_media_type(),
-            mt::DISK_BASE | mt::DISK_LAYER | DISK_ZERO
-        ) {
-            crate::disk::display_chain(
-                &head_digest,
-                &m.geometry,
-                &manifest.layers,
-                &Cancellable {
-                    store,
-                    cancelled: &cancelled,
-                },
-            )?
+        let head = manifest.layers.iter().find(|d| d.names(&head_digest));
+        let members = if m.zero.is_some() {
+            vec![(head_digest.clone(), 0)]
         } else {
-            if head.decoded_media_type() != mt::FLOPPY {
-                return Err(invalid("unsupported medium"));
+            let head = head.ok_or_else(|| invalid("missing disk head"))?;
+            if matches!(
+                head.decoded_media_type(),
+                mt::DISK_BASE | mt::DISK_LAYER | DISK_ZERO
+            ) {
+                crate::disk::display_chain(
+                    &head_digest,
+                    &m.geometry,
+                    &manifest.layers,
+                    &Cancellable {
+                        store,
+                        cancelled: &cancelled,
+                    },
+                )?
+            } else {
+                if head.decoded_media_type() != mt::FLOPPY {
+                    return Err(invalid("unsupported medium"));
+                }
+                vec![(head.digest.clone(), head.size)]
             }
-            vec![(head.digest.clone(), head.size)]
         };
         let drive = config
             .slots
@@ -104,9 +103,14 @@ pub fn check(
                         .iter()
                         .find(|d| d.digest == digest && d.media_type == DISK_ZERO);
                     Ok(ChainMember {
-                        blank_bytes: zero
-                            .map(|d| crate::zero::ZeroBase::read(d, store).map(|z| z.byte_len()))
-                            .transpose()?,
+                        blank_bytes: if let Some(zero) = &m.zero {
+                            Some(zero.size)
+                        } else {
+                            zero.map(|d| {
+                                crate::zero::ZeroBase::read(d, store).map(|z| z.byte_len())
+                            })
+                            .transpose()?
+                        },
                         digest,
                         size,
                         shared_by: 0,

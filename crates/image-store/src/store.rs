@@ -1108,13 +1108,12 @@ impl Store {
                 ordered.push(digest);
             }
         }
-        if ordered
-            != manifest
-                .layers
-                .iter()
-                .map(|d| d.digest.clone())
-                .collect::<Vec<_>>()
-        {
+        let mut expected: Vec<_> = manifest.layers.iter().map(|d| d.digest.clone()).collect();
+        if manifest.config.media_type == media_type::PC_LAUNCH_CONFIG {
+            ordered.sort();
+            expected.sort();
+        }
+        if ordered != expected {
             return Err(invalid(
                 "layers differ from the exact ordered config/metadata closure",
             ));

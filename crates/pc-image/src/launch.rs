@@ -159,24 +159,44 @@ pub fn from_session(
     }
     let mut records = BTreeMap::new();
     for row in &input.document.records {
-        let digest = if row.medium == launch::CMOS_MEDIUM {
-            input.document.config.nvram.as_ref().map(|n| n.head)
-        } else {
-            input
-                .document
-                .config
-                .media
-                .iter()
-                .find(|m| m.id == row.medium)
-                .and_then(|m| m.head)
-        }
-        .ok_or_else(|| crate::invalid("missing journal base binding"))?;
-        let content = input
+        let native = input
             .document
-            .content
+            .config
+            .media
             .iter()
-            .find(|c| c.digest == digest)
-            .ok_or_else(|| crate::invalid("missing journal base row"))?;
+            .find(|m| m.id == row.medium)
+            .and_then(|m| m.zero.as_ref());
+        let base = if let Some(zero) = native {
+            journal_files::Header {
+                base_digest: crate::provider::hash_array(&crate::zero::zero_digest(zero.size))?,
+                base_length: zero.size,
+                anchor_generation: 0,
+            }
+        } else {
+            let digest = if row.medium == launch::CMOS_MEDIUM {
+                input.document.config.nvram.as_ref().map(|n| n.head)
+            } else {
+                input
+                    .document
+                    .config
+                    .media
+                    .iter()
+                    .find(|m| m.id == row.medium)
+                    .and_then(|m| m.head)
+            }
+            .ok_or_else(|| crate::invalid("missing journal base binding"))?;
+            let content = input
+                .document
+                .content
+                .iter()
+                .find(|c| c.digest == digest)
+                .ok_or_else(|| crate::invalid("missing journal base row"))?;
+            journal_files::Header {
+                base_digest: content.sha256,
+                base_length: content.size,
+                anchor_generation: 0,
+            }
+        };
         let path = input
             .records
             .get(&row.name)
@@ -203,11 +223,7 @@ pub fn from_session(
             row.name.clone(),
             Journal {
                 path: path.clone(),
-                base: journal_files::Header {
-                    base_digest: content.sha256,
-                    base_length: content.size,
-                    anchor_generation: 0,
-                },
+                base,
                 metadata,
             },
         );

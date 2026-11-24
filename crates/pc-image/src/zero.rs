@@ -279,6 +279,39 @@ pub(crate) fn disk(
     medium: &crate::Medium,
     image: &ResolvedImage,
 ) -> Result<Option<crate::disk::Disk>> {
+    if let Some(native) = &medium.zero {
+        if medium.head.is_some() {
+            return Err(invalid("zero disk also has a content head"));
+        }
+        let g = &medium.geometry;
+        let zero = ZeroBase::new(g.cylinders, g.heads, g.sectors)?;
+        if zero.byte_len() != native.size {
+            return Err(invalid("zero disk size differs from geometry"));
+        }
+        let identity = zero.identity();
+        let root = Digest::of(&zero.encode()?);
+        let chain = ZeroChain {
+            identity: Header {
+                base_length: zero.byte_len(),
+                base_digest: crate::provider::hash_array(&identity)?,
+                anchor_generation: 0,
+            },
+            zero,
+            written: Arc::new(BTreeMap::new()),
+        };
+        return Ok(Some(crate::disk::Disk {
+            path: Some(
+                store
+                    .root()
+                    .join("cache/unmaterialized")
+                    .join(identity.hex()),
+            ),
+            identity,
+            base: chain.mount()?,
+            root,
+            zero: Some(Rc::new(chain)),
+        }));
+    }
     let descriptors = &image.manifest.layers;
     let head_digest = crate::StoreDigest::store(&crate::medium_head(medium)?)?;
     let head = descriptors
