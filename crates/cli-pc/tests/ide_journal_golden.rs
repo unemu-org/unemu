@@ -14,7 +14,7 @@ use video::Frame;
 use pc_harness::test_support::fixtures;
 
 // Moving the core pin requires checking the recorded golden again.
-const CORE_REV: &str = "4d638ccc4e2b13d3bb7385168a5de745931fed33";
+const CORE_REV: &str = "86e8256782549b626b3f047244ba7059826298d4";
 
 #[path = "../../pc-image/tests/support/core_pin.rs"]
 mod core_pin;

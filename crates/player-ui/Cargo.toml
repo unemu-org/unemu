@@ -17,10 +17,10 @@ unemu-core-api.workspace = true
 # The session the player drives, the screen's geometry and the pad table.
 machine-view.workspace = true
 # The prepared file a player starts from, and starts again on a power cycle.
-core-launch = { path = "../core-launch", version = "0.0.4" }
+core-launch = { path = "../core-launch", version = "0.0.5" }
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
 # The desktop's skin, marks and dialog title strips.
-ui-kit = { path = "../ui-kit", version = "0.0.4" }
+ui-kit = { path = "../ui-kit", version = "0.0.5" }
 # The host's key, button and window types the session takes, at the version
 # machine-view already uses.
 winit.workspace = true
@@ -31,4 +31,4 @@ winit.workspace = true
 machine-view = { workspace = true, features = ["test-support"] }
 # The whole core the player's tests run, through the contract alone.
 unemu-test-core.workspace = true
-ui-kit = { path = "../ui-kit", version = "0.0.4", features = ["test-support"] }
+ui-kit = { path = "../ui-kit", version = "0.0.5", features = ["test-support"] }

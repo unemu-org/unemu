@@ -68,7 +68,7 @@ pub const FIT_BOARDS: &[Row] = &[
     ("compaq-deskpro", BASELINE),
     ("tandy-1000", BASELINE),
     ("generic-386-isa", BASELINE),
-    ("generic-486-isa", NEXT_RELEASE),
+    ("generic-486-isa", AppVersion::new(0, 0, 5)),
     ("i440fx-piix3", BASELINE),
     ("i440bx-piix4", BASELINE),
 ];
@@ -95,8 +95,8 @@ pub fn level() -> AppVersion {
 }
 
 /// PC front-end rows, kept separate from the core rows in `pc_config::compat`.
-pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 5);
-pub const NEWEST_ROW: AppVersion = NEXT_RELEASE;
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 6);
+pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 5);
 
 /// Standalone PC tools supply their application release explicitly.
 pub fn compatibility(frontend: AppVersion) -> Compatibility {

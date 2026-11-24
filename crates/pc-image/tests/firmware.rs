@@ -1533,7 +1533,10 @@ fn package_catalogue_uses_any_fitted_board_and_rejects_conflicting_entries() {
         .unwrap();
     assert_eq!(image.image.digest, descriptor.digest);
     let release = pc_image::compat::releases(&image.manifest, &image.config).unwrap();
-    assert_eq!(release.frontend, pc_image::compat::NEXT_RELEASE);
+    assert_eq!(
+        release.frontend,
+        image_store::compat::AppVersion::new(0, 0, 5)
+    );
     let mut older = Config::decode(&image.config).unwrap();
     let mut older_fit = Fit::decode(&older.fits).unwrap();
     older_fit.boards.retain(|b| b != "generic-486-isa");

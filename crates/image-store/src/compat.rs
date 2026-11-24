@@ -89,7 +89,7 @@ impl fmt::Display for AppVersion {
 pub const BASELINE: AppVersion = AppVersion::new(0, 0, 1);
 /// The next front-end release. Rows use literal historical releases so their
 /// meaning survives later releases; this constant advances with the application.
-pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 5);
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 6);
 /// The newest shared front-end row. Composition also includes the PC provider
 /// and recipe parser's front-end maxima, independently of every core table.
 pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
@@ -1181,9 +1181,10 @@ mod tests {
     /// takes, so the release commit must move it past the new version.
     #[test]
     fn next_release_is_above_the_package_version() {
+        let package: AppVersion = env!("CARGO_PKG_VERSION").parse().unwrap();
         assert!(
-            NEXT_RELEASE > PACKAGE,
-            "release {PACKAGE} is out: raise NEXT_RELEASE past it"
+            NEXT_RELEASE > package,
+            "release {package} is out: raise NEXT_RELEASE past it"
         );
     }
 

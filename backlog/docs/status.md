@@ -7,6 +7,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-24 — Release 0.0.5:** the workspace version is 0.0.5; shipped
+  compatibility rows name their literal release, and `NEXT_RELEASE` in
+  `image_store::compat`, `pc_image::compat` and `recipe::compat` is 0.0.6.
+  The PC core is pinned to the unemupc v0.0.5 tag's commit `86e82567`;
+  unemunes remains an untagged preview at `dbdfbc6f`. Both cores use
+  contract 0.6 (`unemu-core-api` v0.6.0), with unemu-host at `de86256c`.
+  This release adds persistent Remotes metadata caching, nested registry
+  namespaces, complete recipe input fetching, core-provided machine export
+  formats and firmware validation against fitted boards' catalogues,
+  including generic 386/486 ISA SeaBIOS. The PC core adds nominal CPU clocks
+  and the run-only `--turbo` option.
 - **2026-11-23 — Release 0.0.4:** the first release of unemu from its own
   repository. The workspace version is 0.0.4 and `NEXT_RELEASE` in
   `image_store::compat`, `pc_image::compat` and `recipe::compat` is 0.0.5, so

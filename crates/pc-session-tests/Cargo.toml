@@ -19,7 +19,7 @@ doctest = false
 # emulation below it runs them, a change to the desktop does not.
 [dev-dependencies]
 pc-harness = { workspace = true, features = ["test-support"] }
-core-launch = { path = "../core-launch", version = "0.0.4" }
+core-launch = { path = "../core-launch", version = "0.0.5" }
 toml.workspace = true
 assembly = { workspace = true, features = ["test-support"] }
 audio.workspace = true
@@ -36,8 +36,8 @@ unemu-core-api = { workspace = true, features = ["test-support"] }
 unemu-pc-core = { workspace = true, features = ["test-support"] }
 winit.workspace = true
 # The open games template image, built and started as the library starts it.
-image-store = { path = "../image-store", version = "0.0.4" }
-pc-image = { path = "../pc-image", version = "0.0.4", features = ["test-support"] }
-pc-library = { path = "../pc-library", version = "0.0.4" }
+image-store = { path = "../image-store", version = "0.0.5" }
+pc-image = { path = "../pc-image", version = "0.0.5", features = ["test-support"] }
+pc-library = { path = "../pc-library", version = "0.0.5" }
 
 journal-files.workspace = true

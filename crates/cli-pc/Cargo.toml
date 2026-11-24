@@ -15,16 +15,16 @@ layer = "pc"
 [dependencies]
 journal-files.workspace = true
 unemupc = { workspace = true }
-cli-core = { path = "../cli-core", version = "0.0.4" }
-core-launch = { path = "../core-launch", version = "0.0.4" }
+cli-core = { path = "../cli-core", version = "0.0.5" }
+core-launch = { path = "../core-launch", version = "0.0.5" }
 unemu-core-api.workspace = true
 unemu-pc-core.workspace = true
 # The machine runners behind --boot, --bios and run.
 pc-harness = { workspace = true }
-pc-image = { path = "../pc-image", version = "0.0.4" }
-image-store = { path = "../image-store", version = "0.0.4" }
-image-registry = { path = "../registry", version = "0.0.4" }
-recipe = { path = "../recipe", version = "0.0.4" }
+pc-image = { path = "../pc-image", version = "0.0.5" }
+image-store = { path = "../image-store", version = "0.0.5" }
+image-registry = { path = "../registry", version = "0.0.5" }
+recipe = { path = "../recipe", version = "0.0.5" }
 toml.workspace = true
 machine-file.workspace = true
 anyhow.workspace = true
@@ -37,12 +37,12 @@ video.workspace = true
 [dev-dependencies]
 pc-harness = { workspace = true, features = ["test-support"] }
 machine-file = { workspace = true, features = ["test-support"] }
-pc-image = { path = "../pc-image", version = "0.0.4", features = ["test-support"] }
+pc-image = { path = "../pc-image", version = "0.0.5", features = ["test-support"] }
 cpu.workspace = true
 devices.workspace = true
 # The FAT12 reader that checks disks built from host files.
 media.workspace = true
-image-registry = { path = "../registry", version = "0.0.4", features = ["test-support"] }
+image-registry = { path = "../registry", version = "0.0.5", features = ["test-support"] }
 # Tags an image as a newer release would, in a store both share.
-image-store = { path = "../image-store", version = "0.0.4", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.5", features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }

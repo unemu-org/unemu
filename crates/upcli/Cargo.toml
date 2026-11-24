@@ -14,21 +14,21 @@ layer = "application"
 
 [dependencies]
 machine-file.workspace = true
-cli-core = { path = "../cli-core", version = "0.0.4" }
-cli-pc = { path = "../cli-pc", version = "0.0.4" }
+cli-core = { path = "../cli-core", version = "0.0.5" }
+cli-pc = { path = "../cli-pc", version = "0.0.5" }
 # The platforms compiled in: their cores and the licence notice.
-platforms = { path = "../platforms", version = "0.0.4" }
+platforms = { path = "../platforms", version = "0.0.5" }
 # The cores this program can drive, and their About lines.
-core-launch = { path = "../core-launch", version = "0.0.4" }
+core-launch = { path = "../core-launch", version = "0.0.5" }
 # The host's default store and firmware index, which the executable supplies.
-image-store = { path = "../image-store", version = "0.0.4" }
+image-store = { path = "../image-store", version = "0.0.5" }
 assembly.workspace = true
 # The third-party notice of `--version` and `--about`.
 devices.workspace = true
 
 [dev-dependencies]
 pc-harness = { workspace = true, features = ["test-support"] }
-pc-image = { path = "../pc-image", version = "0.0.4" }
-image-registry = { path = "../registry", version = "0.0.4", features = ["test-support"] }
+pc-image = { path = "../pc-image", version = "0.0.5" }
+image-registry = { path = "../registry", version = "0.0.5", features = ["test-support"] }
 cpu.workspace = true
 machine.workspace = true
