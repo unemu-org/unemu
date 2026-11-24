@@ -108,7 +108,7 @@ struct Scripted {
 impl Scripted {
     const fn new(id: &'static str, name: &'static str, answer: Answer) -> Self {
         Self {
-            description: CoreDescription::new(ContractVersion::new(0, 5), id, name, "1.0.0"),
+            description: CoreDescription::new(ContractVersion::new(0, 6), id, name, "1.0.0"),
             answer,
             create: Create::Refuse,
         }
@@ -368,7 +368,7 @@ fn a_named_core_the_program_cannot_drive_is_refused_before_anything_is_asked() {
     let error = refusal(prepare(&game, &cores, Some("old"), &scratch.dirs()));
     assert_eq!(
         error.to_string(),
-        "core Old core implements contract 0.1; this program needs 0.5"
+        "core Old core implements contract 0.1; this program needs 0.6"
     );
     assert!(take_asked().is_empty());
     // A refused core is never asked, also without a name.
@@ -1084,7 +1084,7 @@ thread_local! {
 struct Recording;
 
 static RECORDING: CoreDescription = CoreDescription::new(
-    ContractVersion::new(0, 5),
+    ContractVersion::new(0, 6),
     "recording",
     "Recording core",
     "1.0.0",

@@ -1871,7 +1871,8 @@ fn insert_medium(
             input.document.config.media.push(pc_config::image::Medium {
                 id: id.clone(),
                 source,
-                head: digest,
+                head: Some(digest),
+                zero: None,
                 name: Some(medium.label.clone()),
                 policy: if insert.journal {
                     Policy::Journal
@@ -1904,13 +1905,13 @@ fn insert_medium(
                                 .document
                                 .content
                                 .iter()
-                                .find(|r| r.digest == m.head)
+                                .find(|r| Some(r.digest) == m.head)
                                 .map(|r| r.sha256)
                                 == input
                                     .document
                                     .content
                                     .iter()
-                                    .find(|r| r.digest == old.head)
+                                    .find(|r| Some(r.digest) == old.head)
                                     .map(|r| r.sha256)
                     })
                 });

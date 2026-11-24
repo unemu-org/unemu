@@ -38,7 +38,7 @@ const EXECUTABLE_BOARDS: &[assembly::BoardModel] = &[assembly::BoardModel::Ibm51
 fn model_class(model: assembly::BoardModel) -> Option<&'static str> {
     match model.class() {
         Some(assembly::MachineClass::At) => Some("at"),
-        None => None,
+        Some(assembly::MachineClass::At386 | assembly::MachineClass::At486) | None => None,
     }
 }
 fn board_class(board: &str) -> Option<&'static str> {
@@ -340,7 +340,9 @@ fn resolve_document(
     };
     let model = match document.board.as_ref().and_then(|b| b.model) {
         Some(machine_file::schema::v1::BoardModel::Ibm5170) => assembly::BoardModel::Ibm5170,
-        None => return Ok(Vec::new()),
+        Some(machine_file::schema::v1::BoardModel::Generic386Isa)
+        | Some(machine_file::schema::v1::BoardModel::Generic486Isa)
+        | None => return Ok(Vec::new()),
     };
     let board = model.id();
     let cache = (|| {

@@ -224,11 +224,11 @@ mod tests {
         PlatformDescription::new("console", "Console").with_content(&KINDS),
     ];
     static OTHER_PC: Described = Described(
-        CoreDescription::new(ContractVersion::new(0, 5), "other-pc", "Other PC", "1.0.0")
+        CoreDescription::new(ContractVersion::new(0, 6), "other-pc", "Other PC", "1.0.0")
             .with_platforms(&SECOND_PC),
     );
     static HOME_CORE: Described = Described(
-        CoreDescription::new(ContractVersion::new(0, 5), "home", "Home", "1.0.0")
+        CoreDescription::new(ContractVersion::new(0, 6), "home", "Home", "1.0.0")
             .with_platforms(&HOME),
     );
 
@@ -342,7 +342,7 @@ mod tests {
         use image_store::compat::AppVersion as V;
         for (core_version, frontend) in [("0.0.5", 9), ("0.0.9", 5)] {
             let core = Described(
-                CoreDescription::new(ContractVersion::new(0, 5), "home", "Home", core_version)
+                CoreDescription::new(ContractVersion::new(0, 6), "home", "Home", core_version)
                     .with_platforms(&HOME),
             );
             let runtime =

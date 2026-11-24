@@ -1507,8 +1507,8 @@ use an extending file as shown in
 workspace, Cargo also needs `--manifest-path /path/to/workspace/Cargo.toml`.
 `--help`, `--version` and `--about` include the embedded fonts' attribution and
 the Nuked-OPL3 notice; `--version` and `--about` also print one line per
-compiled-in core, `core unemupc 0.0.4 (unemupc), contract 0.5` and
-`core unemunes 0.0.1 (unemunes), contract 0.5` in the release (a core
+compiled-in core, `core unemupc 0.0.4 (unemupc), contract 0.6` and
+`core unemunes 0.0.1 (unemunes), contract 0.6` in the release (a core
 built for another contract ends its line with `, unusable: ` and the reason),
 then the licence, the source URL and where the full licence texts are.
 `unemu --version` (or `--about`) prints the same for the command line, the core
@@ -1527,7 +1527,7 @@ offers "NES cartridge images (*.nes)", and `--open game.nes` starts one, say
 `cargo run --offline -p window --bin unemu -- --open /path/to/game.nes`. A build whose
 cores open nothing greys File › Open… ("No core in this release opens
 files"). `--features platforms/test-core` adds the scripted test core, whose
-`.utc` scripts it runs (the [script grammar in unemu-host](https://github.com/unemu-org/unemu-host/blob/1692a1fcfd6c9900d3074786a54f51c9de3b30f0/crates/test-core/src/lib.rs) describes them, and
+`.utc` scripts it runs (the [script grammar in unemu-host](https://github.com/unemu-org/unemu-host/blob/de86256cfd9d88aeb48c0d5480fa2838f0c152b8/crates/test-core/src/lib.rs) describes them, and
 `unemu-test-core 1` on the first line is a whole script). With that feature
 the `--about` pins of both programs fail by the test core's line.
 On Linux the window requires the host's X11 or Wayland client libraries at run

@@ -762,7 +762,8 @@ pub fn import_machine(
             config.media.push(Medium {
                 id: id.clone(),
                 source: format!("assets/{id}.img"),
-                head: d.decoded_digest()?.to_config()?,
+                head: Some(d.decoded_digest()?.to_config()?),
+                zero: None,
                 name,
                 policy: Policy::from_write(write),
                 geometry: Geometry::of_medium(drive.kind, d.decoded_size()?)?,

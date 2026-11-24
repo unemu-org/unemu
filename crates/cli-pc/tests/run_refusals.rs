@@ -252,6 +252,5 @@ fn workspace_run_checks_pin_mismatch_before_manifest_decoding() {
 
 /// The PC core's release, which a refusal names as the release that reads.
 fn core_release() -> String {
-    use unemu_core_api::Core;
-    unemu_pc_core::PcCore.description().version.to_string()
+    pc_image::compat::level().to_string()
 }

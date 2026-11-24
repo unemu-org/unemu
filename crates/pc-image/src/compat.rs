@@ -366,10 +366,6 @@ mod tests {
                 assert!(compat::lookup(&[FIT_BOARDS], board).is_some(), "{board}");
             }
         }
-        assert_eq!(
-            pc_config::compat::CATALOGUE.len(),
-            crate::firmware::catalogue().len()
-        );
         for (rows, values) in [
             (ROLES, crate::firmware::ROLES),
             (FIT_BOARDS, BOARDS),

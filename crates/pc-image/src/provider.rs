@@ -356,7 +356,7 @@ fn store_half<'a>(
             if !first_use && medium.policy != Policy::Readonly {
                 return Ok(stored);
             }
-            let head_digest = medium.head.store()?;
+            let head_digest = crate::medium_head(medium)?.store()?;
             let payload_type = if ide {
                 let head = descriptors
                     .iter()
@@ -394,7 +394,9 @@ fn store_half<'a>(
                 d.decoded_size()?
             };
             let sha256 = hash_array(&crate::disk::identity(&head_digest, descriptors, blobs)?)?;
-            stored.rows.insert(medium.head, ContentRow { sha256, size });
+            stored
+                .rows
+                .insert(crate::medium_head(medium)?, ContentRow { sha256, size });
         }
     }
     if let Some(nvram) = &config.nvram {
@@ -626,12 +628,12 @@ pub(crate) fn resolve_pinned(
     let bases = resolved.bases;
     for medium in &document.config.media {
         let disk = bases
-            .get(&medium.head)
+            .get(&crate::medium_head(medium)?)
             .ok_or_else(|| invalid("missing prepared disk"))?;
         let row = document
             .content
             .iter_mut()
-            .find(|r| r.digest == medium.head)
+            .find(|r| Some(r.digest) == medium.head)
             .ok_or_else(|| invalid("missing content row"))?;
         row.sha256 = disk.base.identity().base_digest;
         row.size = disk.base.byte_len();
@@ -671,7 +673,7 @@ pub(crate) fn resolve_pinned(
     let mut memory = BTreeMap::new();
     for medium in &document.config.media {
         let disk = bases
-            .get(&medium.head)
+            .get(&crate::medium_head(medium)?)
             .ok_or_else(|| invalid("missing prepared disk"))?;
         sources.insert(medium.source.clone().into(), base_key(store, disk));
         if disk.path.is_none() {
@@ -849,11 +851,37 @@ mod tests {
     use std::cell::RefCell;
 
     // Moving the core pin requires checking the recorded golden again.
-    const CORE_REV: &str = "472ababef9dbee6fdd552f7d873eaac79fd9864b";
+    const CORE_REV: &str = "8b8f1d3818c0805368448a14c58c850d188bb74f";
 
     #[test]
     fn golden_core_revision_matches_lock() {
         assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+    }
+
+    #[test]
+    fn stored_image_refuses_document_owned_zero_disk_without_reading_content() {
+        let config: toml::Table = r#"schema = 1
+platform = "ibm-pc"
+[machine]
+schema = 1
+[machine.board]
+model = "ibm-5170"
+[[media]]
+id = "disk"
+source = "assets/disk.img"
+zero = { size = 512 }
+policy = "journal"
+geometry = { cylinders = 1, heads = 1, sectors = 1, sector_bytes = 512 }
+"#
+        .parse()
+        .unwrap();
+        let blobs = Memory::new([]);
+        let error = PcProvider.validate(&config, &[], &blobs).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid image: invalid PC image: medium \"disk\": document-owned zero disks without a content head are not supported"
+        );
+        assert!(blobs.reads.borrow().is_empty());
     }
 
     /// Blobs in memory by digest, with the digests read in order.
@@ -1464,7 +1492,7 @@ inserted = "HEAD_C"
         second.id = "b".into();
         second.source = "assets/b.img".into();
         second.name = Some("Disk b".into());
-        second.head = codec::Digest::of(&floppy);
+        second.head = Some(codec::Digest::of(&floppy));
         config.media.push(second);
         descriptors.push(Descriptor::new(
             mt::FLOPPY,

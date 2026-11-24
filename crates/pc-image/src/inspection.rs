@@ -88,7 +88,7 @@ pub fn inspect(
     let mut media = Vec::new();
     for m in &config.media {
         let mut chain = Vec::new();
-        let mut head = m.head.store()?;
+        let mut head = crate::medium_head(m)?.store()?;
         loop {
             let d = manifest
                 .layers

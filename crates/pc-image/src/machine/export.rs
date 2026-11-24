@@ -132,7 +132,8 @@ pub fn open_with_hook(
         document.config.media.push(Medium {
             id: id.clone(),
             source: format!("assets/{id}.img"),
-            head: digest,
+            head: Some(digest),
+            zero: None,
             name: Some(medium.label.clone()),
             policy: if insert.journal {
                 Policy::Journal

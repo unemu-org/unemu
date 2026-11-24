@@ -122,7 +122,11 @@ impl PreparedLaunch {
         });
         document.content.retain(|r| {
             document.config.firmware.iter().any(|f| f.blob == r.digest)
-                || document.config.media.iter().any(|m| m.head == r.digest)
+                || document
+                    .config
+                    .media
+                    .iter()
+                    .any(|m| m.head == Some(r.digest))
                 || document
                     .config
                     .nvram
@@ -556,9 +560,9 @@ pub(crate) fn publish_machine(
     }
     for m in &mut config.media {
         let disk = bases
-            .get(&m.head)
+            .get(&crate::medium_head(m)?)
             .ok_or_else(|| invalid("missing verified medium"))?;
-        let head_digest = m.head.store()?;
+        let head_digest = crate::medium_head(m)?.store()?;
         let old_head = descriptors
             .iter()
             .find(|d| d.names(&head_digest))
@@ -624,7 +628,7 @@ pub(crate) fn publish_machine(
             )?;
             let (parent, parent_digest): (&dyn SectorSource, String) = match &zero_root {
                 Some(root) if flatten_disk => (root, disk.root.to_string()),
-                _ => (&disk.base, m.head.to_string()),
+                _ => (&disk.base, crate::medium_head(m)?.to_string()),
             };
             let pack_path = scratch.join(format!("{}.pack", m.id));
             let mut file = fs::File::create(&pack_path)?;
@@ -639,7 +643,7 @@ pub(crate) fn publish_machine(
             file.sync_all()?;
             if flatten_disk && layer.sector_count == 0 {
                 // Every sector is zero again: the flattened head is the zero base.
-                m.head = disk.root.to_config()?;
+                m.head = Some(disk.root.to_config()?);
                 continue;
             }
             hook(PublicationStep::PackStaged(m.id.clone()))?;
@@ -655,7 +659,7 @@ pub(crate) fn publish_machine(
             descriptors.push(classify(d));
             stored(store, mt::DISK_LAYER, &layer.encode()?, &mut hook)?
         };
-        m.head = d.decoded_digest()?.to_config()?;
+        m.head = Some(d.decoded_digest()?.to_config()?);
         descriptors.push(d);
     }
     if let Some(n) = &mut config.nvram {
@@ -1237,7 +1241,8 @@ impl PreparedSession {
                     pc_config::image::Medium {
                         id: id.clone(),
                         source: source.clone(),
-                        head: digest,
+                        head: Some(digest),
+                        zero: None,
                         name: None,
                         policy: Policy::from_write(&entry.write),
                         geometry: pc_config::image::Geometry::of(assembly::DriveKind::Floppy {

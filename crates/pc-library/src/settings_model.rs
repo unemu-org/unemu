@@ -1427,6 +1427,10 @@ mod tests {
                 .option_roms
                 .get_or_insert_default()
                 .push(file::Rom {
+                    use_id: None,
+                    rom: None,
+                    role: None,
+                    size: None,
                     image: Some(path),
                     sha256: Some(digest),
                     base: Some(0xC8000),
@@ -1499,6 +1503,12 @@ mod tests {
             }
             let temp = machine_file::test_support::TempDir::new("normal-lowering-parity");
             let (document, origins) = machine_file::resolve(&path).unwrap();
+            // The replacement BIOS is for the AT; other boards require different ROM layouts.
+            if document.board.as_ref().and_then(|board| board.model)
+                != Some(file::BoardModel::Ibm5170)
+            {
+                continue;
+            }
             let variant = fixture_variant(document, &origins, temp.path(), &bios);
             let metadata = variant.describe(&origins).unwrap();
             let normal = machine_file::lower_with_options(

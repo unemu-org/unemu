@@ -118,7 +118,7 @@ pub fn from_session(
             .config
             .media
             .iter()
-            .find(|m| m.head == row.digest)
+            .find(|m| m.head == Some(row.digest))
         {
             let path = input
                 .sources
@@ -168,7 +168,7 @@ pub fn from_session(
                 .media
                 .iter()
                 .find(|m| m.id == row.medium)
-                .map(|m| m.head)
+                .and_then(|m| m.head)
         }
         .ok_or_else(|| crate::invalid("missing journal base binding"))?;
         let content = input

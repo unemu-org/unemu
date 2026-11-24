@@ -170,7 +170,23 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
 }
 fn decode(table: toml::Table) -> Result<Config> {
-    Ok(Config::decode(table)?)
+    let config = Config::decode(table)?;
+    for medium in &config.media {
+        medium_head(medium)?;
+    }
+    Ok(config)
+}
+
+fn medium_head(medium: &pc_config::image::Medium) -> Result<pc_config::image::Digest> {
+    medium
+        .head
+        .filter(|_| medium.zero.is_none())
+        .ok_or_else(|| {
+            invalid(format!(
+                "medium {:?}: document-owned zero disks without a content head are not supported",
+                medium.id
+            ))
+        })
 }
 
 fn descriptor(descriptors: &[Descriptor], digest: &Digest, kind: &str) -> Result<Descriptor> {

@@ -26,7 +26,7 @@ static OLDER_MINOR: Stating = Stating(CoreDescription::new(
     "1.4.0",
 ));
 static NEXT_MINOR: Stating = Stating(CoreDescription::new(
-    ContractVersion::new(0, 6),
+    ContractVersion::new(0, 7),
     "next",
     "Next core",
     "0.9.1",
@@ -38,7 +38,7 @@ static OTHER_MAJOR: Stating = Stating(CoreDescription::new(
     "2.0.0",
 ));
 static SAME: Stating = Stating(CoreDescription::new(
-    ContractVersion::new(0, 5),
+    ContractVersion::new(0, 6),
     "same",
     "Same core",
     "0.1.0",
@@ -50,11 +50,11 @@ fn ids(cores: impl Iterator<Item = &'static dyn Core>) -> Vec<&'static str> {
     cores.map(|core| core.description().id).collect()
 }
 
-/// The programs are built against contract 0.5; the scripted cores above
+/// The programs are built against contract 0.6; the scripted cores above
 /// are written for that.
 #[test]
-fn the_tests_assume_the_contract_this_program_drives_is_0_5() {
-    assert_eq!(CONTRACT, ContractVersion::new(0, 5));
+fn the_tests_assume_the_contract_this_program_drives_is_0_6() {
+    assert_eq!(CONTRACT, ContractVersion::new(0, 6));
 }
 
 #[test]
@@ -70,15 +70,15 @@ fn a_core_that_states_another_contract_is_refused_with_the_reason() {
         [
             (
                 "older",
-                "core Older core implements contract 0.4; this program needs 0.5"
+                "core Older core implements contract 0.4; this program needs 0.6"
             ),
             (
                 "next",
-                "core Next core implements contract 0.6; this program needs 0.5"
+                "core Next core implements contract 0.7; this program needs 0.6"
             ),
             (
                 "major",
-                "core Major core implements contract 1.2; this program needs 0.5"
+                "core Major core implements contract 1.2; this program needs 0.6"
             ),
         ]
     );
@@ -107,11 +107,11 @@ fn the_about_lines_list_every_core_in_order_and_say_which_are_unusable() {
     assert_eq!(
         Cores::new(&LIST).about_lines(),
         [
-            "core older 1.4.0 (Older core), contract 0.4, unusable: core Older core implements contract 0.4; this program needs 0.5".to_owned(),
-            format!("core unemu-test-core {test_core} (unemu test core), contract 0.5"),
-            "core next 0.9.1 (Next core), contract 0.6, unusable: core Next core implements contract 0.6; this program needs 0.5".to_owned(),
-            "core same 0.1.0 (Same core), contract 0.5".to_owned(),
-            "core major 2.0.0 (Major core), contract 1.2, unusable: core Major core implements contract 1.2; this program needs 0.5".to_owned(),
+            "core older 1.4.0 (Older core), contract 0.4, unusable: core Older core implements contract 0.4; this program needs 0.6".to_owned(),
+            format!("core unemu-test-core {test_core} (unemu test core), contract 0.6"),
+            "core next 0.9.1 (Next core), contract 0.7, unusable: core Next core implements contract 0.7; this program needs 0.6".to_owned(),
+            "core same 0.1.0 (Same core), contract 0.6".to_owned(),
+            "core major 2.0.0 (Major core), contract 1.2, unusable: core Major core implements contract 1.2; this program needs 0.6".to_owned(),
         ]
     );
 }
@@ -153,7 +153,7 @@ static OLD_TEST: Stating = Stating(
 /// A second usable core of the test core's platform.
 static SECOND_TEST: Stating = Stating(
     CoreDescription::new(
-        ContractVersion::new(0, 5),
+        ContractVersion::new(0, 6),
         "second-test",
         "Second test core",
         "0.1.0",

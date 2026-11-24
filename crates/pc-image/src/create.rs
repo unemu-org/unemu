@@ -764,7 +764,8 @@ fn plan(image: &NewImage) -> Result<Plan> {
         config.media.push(Medium {
             id: id.clone(),
             source: format!("assets/{id}.img"),
-            head: d.digest.to_config()?,
+            head: Some(d.digest.to_config()?),
+            zero: None,
             name: None,
             policy: Policy::Journal,
             geometry: Geometry {

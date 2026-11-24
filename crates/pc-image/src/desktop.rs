@@ -60,7 +60,7 @@ pub fn check(
     let mut media = Vec::new();
     for m in &config.media {
         stop()?;
-        let head_digest = m.head.store()?;
+        let head_digest = crate::medium_head(m)?.store()?;
         let head = manifest
             .layers
             .iter()

@@ -503,7 +503,7 @@ fn stored_fixture_with_zero(
     let mut layers = Vec::new();
     for (digest, kind) in [
         (document.config.firmware[0].blob, mt::FIRMWARE),
-        (document.config.media[0].head, mt::FLOPPY),
+        (document.config.media[0].head.unwrap(), mt::FLOPPY),
         (document.config.nvram.as_ref().unwrap().head, pc_image::CMOS),
     ] {
         let blob = store
@@ -534,7 +534,8 @@ fn stored_fixture_with_zero(
         document.config.media.push(pc_config::image::Medium {
             id: "c".into(),
             source: "assets/c.img".into(),
-            head: digest,
+            head: Some(digest),
+            zero: None,
             name: None,
             policy: pc_config::image::Policy::Journal,
             geometry: pc_config::image::Geometry {
@@ -861,7 +862,7 @@ fn stored_compressed_floppy_and_zero_disk_plans_restart_after_thread_transfer() 
         let zero = doc
             .content
             .iter()
-            .find(|c| c.digest == doc.config.media[1].head)
+            .find(|c| Some(c.digest) == doc.config.media[1].head)
             .unwrap();
         let identity = (zero.sha256, zero.size);
         let prepared = pc_image::launch::from_session(session, &PcCore, "Sparse".into()).unwrap();
@@ -889,7 +890,7 @@ fn stored_compressed_floppy_and_zero_disk_plans_restart_after_thread_transfer() 
         assert!(!store
             .root()
             .join("cache/unmaterialized")
-            .join(doc.config.media[1].head.hex())
+            .join(doc.config.media[1].head.unwrap().hex())
             .exists());
         assert!(owner.path().join("media/c.upfj").is_file());
     });

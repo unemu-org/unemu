@@ -280,7 +280,7 @@ pub(crate) fn disk(
     image: &ResolvedImage,
 ) -> Result<Option<crate::disk::Disk>> {
     let descriptors = &image.manifest.layers;
-    let head_digest = crate::StoreDigest::store(&medium.head)?;
+    let head_digest = crate::StoreDigest::store(&crate::medium_head(medium)?)?;
     let head = descriptors
         .iter()
         .find(|d| d.names(&head_digest))
@@ -336,7 +336,7 @@ pub(crate) fn disk(
             store
                 .root()
                 .join("cache/unmaterialized")
-                .join(medium.head.hex()),
+                .join(crate::medium_head(medium)?.hex()),
         ),
         identity,
         base,

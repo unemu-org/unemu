@@ -321,10 +321,21 @@ pub(crate) fn export_base(
     if d.decoded_media_type() != mt::DISK_LAYER {
         return export_content(image, &d.decoded_digest()?);
     }
-    let expected = identity(&m.head.store()?, &image.manifest.layers, store)?;
+    let expected = identity(
+        &crate::medium_head(m)?.store()?,
+        &image.manifest.layers,
+        store,
+    )?;
     let (store, medium, image) = (store.clone(), m.clone(), image.clone());
     verified_stream(
-        move || layered(&store, &medium.head.store()?, &medium.geometry, &image),
+        move || {
+            layered(
+                &store,
+                &crate::medium_head(&medium)?.store()?,
+                &medium.geometry,
+                &image,
+            )
+        },
         &expected,
     )
 }
@@ -443,7 +454,9 @@ pub(crate) fn bases(
 ) -> Result<BTreeMap<pc_config::image::Digest, Disk>> {
     let mut bases = BTreeMap::new();
     for medium in &config.media {
-        if let std::collections::btree_map::Entry::Vacant(entry) = bases.entry(medium.head) {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            bases.entry(crate::medium_head(medium)?)
+        {
             entry.insert(base_path(store, medium, image)?);
         }
     }
@@ -473,7 +486,7 @@ pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Re
             continue;
         }
         let d = head(m, image)?;
-        let head_digest = m.head.store()?;
+        let head_digest = crate::medium_head(m)?.store()?;
         if crate::zero::rooted(&head_digest, &m.geometry, &image.manifest.layers, store)? {
             // A zero base has no stored data; a chain over one streams like
             // any layered head, its unwritten sectors read as zeros.
@@ -488,7 +501,7 @@ pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Re
             }
         } else if d.media_type == mt::DISK_LAYER {
             let identity = identity(&head_digest, &image.manifest.layers, store)?;
-            let (path, marker) = head_paths(store, &identity, m);
+            let (path, marker) = head_paths(store, &identity, &head_digest);
             if path.is_file() && known_head(&marker) {
                 cached_head(&path, m, &identity)?;
             } else {
@@ -509,7 +522,7 @@ pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Re
     Ok(())
 }
 fn head<'a>(m: &Medium, image: &'a ResolvedImage) -> Result<&'a Descriptor> {
-    let head = m.head.store()?;
+    let head = crate::medium_head(m)?.store()?;
     image
         .manifest
         .layers
@@ -517,11 +530,11 @@ fn head<'a>(m: &Medium, image: &'a ResolvedImage) -> Result<&'a Descriptor> {
         .find(|d| d.names(&head))
         .ok_or_else(|| invalid("missing disk head"))
 }
-fn head_paths(store: &Store, identity: &Digest, m: &Medium) -> (PathBuf, PathBuf) {
+fn head_paths(store: &Store, identity: &Digest, head: &Digest) -> (PathBuf, PathBuf) {
     let directory = store.root().join("cache/materialized");
     (
         directory.join(identity.hex()),
-        directory.join(format!("{}.{}.verified", identity.hex(), m.head.hex())),
+        directory.join(format!("{}.{}.verified", identity.hex(), head.hex())),
     )
 }
 const MARKER: &[u8] = b"verified disk head v1\n";
@@ -567,13 +580,13 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
             zero: None,
         });
     }
-    let head_digest = m.head.store()?;
+    let head_digest = crate::medium_head(m)?.store()?;
     let identity = identity(&head_digest, &image.manifest.layers, store)?;
     let directory = store.root().join("cache/materialized");
     fs::create_dir_all(&directory)?;
     fs::File::open(store.root())?.sync_all()?;
     fs::File::open(store.root().join("cache"))?.sync_all()?;
-    let (path, marker) = head_paths(store, &identity, m);
+    let (path, marker) = head_paths(store, &identity, &head_digest);
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)

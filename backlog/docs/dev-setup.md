@@ -78,13 +78,13 @@ through `pc_harness::test_support::root()`; missing required fixtures fail with
 untracked. The front end owns the FreeDOS 1.4 and recipe fixture scripts.
 Never commit a bare path dependency. Land changes in the core before moving
 all PC pins together and rerunning the front-end gate. The NES core is likewise
-pinned, to `ba0ece5d1bdad3d4ec813d5a795a54175118a46b`.
+pinned, to `dbdfbc6fab42ff4cc20961b7b2baec4ef6ec555c`.
 
 ### Host libraries: unemu-host
 
 The neutral session `machine-view` and synthetic `unemu-test-core` come from
 [unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
-pinned to `1692a1fcfd6c9900d3074786a54f51c9de3b30f0` in `Cargo.toml` and
+pinned to `de86256cfd9d88aeb48c0d5480fa2838f0c152b8` in `Cargo.toml` and
 `Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
 first, then re-pin this workspace and run its gate, as for a core change.
 
@@ -111,8 +111,8 @@ resolved graph to contain exactly one `unemu-core-api`.
 
 The contract between front ends and emulator cores, `unemu-core-api`, lives in its own repository,
 [unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api) (`MIT OR Apache-2.0`), and
-is pinned with `unemu-core-files` to contract 0.5 at
-`316dd2a1f429cc3ef37a2bed203e89b2160079ff` (tag `v0.5.0`): a git dependency
+is pinned with `unemu-core-files` to contract 0.6 at
+`a4ec90098e7ca0bc7ce60b2d20af43f140eb3960` (tag `v0.6.0`): a git dependency
 at the exact commit of a release tag, never a bare `path` dependency. To work against a local checkout, add an override in the
 gitignored `.cargo/config.toml`:
 
