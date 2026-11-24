@@ -20,6 +20,9 @@ Revised on 2026-11-24 (maintainer) after the core's content-bindings seam
 landed with contract 0.6. §3, §4, §5, §8 and §9 now follow the implemented
 shape. In particular, §8 no longer asks template recipes to reproduce the
 published `1.2.0` template digests, which the composed config cannot do.
+A second revision the same day (maintainer) gives every 1.1 output name one
+shape, `NAMESPACE/KIND/PLATFORM/ID` with a namespace of one or more
+segments, and moves templates to `machines/` (§5).
 
 ## Context
 
@@ -72,7 +75,7 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    recipe = "1.1"
 
    [machine]
-   name = "unemu/open-at"
+   name = "unemu/machines/ibm-pc/open-at"
    platform = "ibm-pc"
    version = "1.3.0"
    digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" # Placeholder.
@@ -230,11 +233,29 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    Keep decision-34's three lock files, payload checks and lost/broken-lock
    rules. `machine.digest` pins the manifest.
 
-5. **Names and publication retain existing rules.** Decision-35 maps
-   `unemu/open-at:1.2.0` to `unemu/recipes/open-at:1.2.0`, without `machine/`.
-   Reserve template names `media`, `firmware`, `machines` and every future
-   kind segment under `unemu/recipes/`. A new kind must not shadow an existing
-   template. Software's source directory may be `recipes/machine/`.
+5. **Names have one shape in 1.1; publication keeps existing rules.**
+   Every 1.1 output is named `NAMESPACE/KIND/PLATFORM/ID`, where KIND is
+   `media`, `firmware` or `machines`. NAMESPACE is one or more segments, so
+   `unemu/experimental/media/ibm-pc/freedos-append` and
+   `unemu/machines/ibm-pc/open-at` are both valid. A name is read from its
+   end: KIND is the third segment from the end, and PLATFORM must equal the
+   recipe's `platform`. `media`, `firmware`, `machines` and `recipes` are
+   reserved and never a namespace segment, so no two kinds share a name.
+   Version 1.0 keeps its four-segment names.
+
+   The recipe artifact's name inserts `recipes/` after the whole namespace:
+   `unemu/experimental/machines/ibm-pc/open-at:1.3.0` maps to
+   `unemu/experimental/recipes/machines/ibm-pc/open-at:1.3.0`, so a recipe
+   lists under the same Remotes namespace as its output. For a one-segment
+   namespace this is decision-35's mapping unchanged, so published 1.0
+   recipe artifacts keep their names. Everything under `unemu/` follows the
+   official namespace's rules.
+
+   Templates move to `machines/`. The repositories `unemu/open-at` and
+   `unemu/open-at-games` keep their `1.2.0` templates and receive nothing
+   new; `1.3.0` is published as `unemu/machines/ibm-pc/open-at` and
+   `unemu/machines/ibm-pc/open-at-games`. The move is announced, since the
+   old repositories' `latest` stays at `1.2.0`.
    Outputs keep SemVer and the guarded `latest` policy. Recipe tags match
    immutable output tags and have no `latest`. Published 1.0 recipes stay at
    1.0: no same-output tag replacement with 1.1.
@@ -294,7 +315,8 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    config bytes give a different manifest, so a recipe cannot reproduce
    those digests. The published `1.2.0` templates stay as they are, like the
    1.0 recipes. The recipe-built templates take the next minor version,
-   `1.3.0`, and carry the markers of §6, so older front ends keep `1.2.0`.
+   `1.3.0` under the `machines/` names of §5, and carry the markers of §6,
+   so older front ends keep `1.2.0`.
 
    `ufe-xle.2` emits the bound-form config documents for open-at and
    open-at-games. Software keeps them as file inputs and publishes `1.3.0`.
