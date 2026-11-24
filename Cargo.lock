@@ -3149,6 +3149,7 @@ dependencies = [
  "sha2",
  "toml",
  "toml_parser",
+ "unemu-core-api",
 ]
 
 [[package]]

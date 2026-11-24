@@ -1622,8 +1622,43 @@ kept whole before `recipes/`.
 
 Static `recipe check` validates this structure without opening inputs,
 contacting a registry or calling a core. Config bindings and package
-closure require resolved checks. Machine `recipe plan` and `recipe build`
-currently refuse with `machine recipes are not built yet`.
+closure require resolved checks.
+
+Machine `recipe plan` resolves the config through the ordinary file-input
+resolver. It reports each pinned use as present with that manifest digest
+or missing, with the proposed pull from the image reference's registry and
+`--fetch` consent. Tags do not determine presence. Declared disks report
+ids and exact byte sizes; they require no payload. The one output is the
+machine's `name:version`, dependent on its config, uses and disk declarations.
+Machine JSON adds `uses` and `disks` arrays to the existing plan object,
+without a schema-version field or changes to the 1.0 rows. Planning never
+downloads package payloads.
+
+Machine `recipe build` checks the selected core's `content_bindings`
+capability before downloads and refuses an unsupported core with
+`this core cannot compose templates`. Without `--fetch`, missing uses stop
+the build like missing file inputs. With consent, acquisition reads each
+manifest by the pinned digest from the image reference's registry; a tag
+that now names another digest is irrelevant. It checks manifest identity,
+artifact kind and platform before package payloads, then imports the
+closure sequentially in descriptor order through the registry and store
+verifiers. Package acquisition writes no local tag. An unreadable config
+or an unsupported config requirement stops acquisition before other layers
+when it can be diagnosed from the small config alone.
+
+The platform provider interprets verified packages. For IBM PC firmware it
+reports each logical ROM's id, size, full SHA-256 and that ROM's own
+package-declared role, validated against its catalogue entry when stated.
+It never unions permissions from other packages or catalogue items. Media
+facts name members such as `disk-1`. The associated content source admits
+only the declared item identities and serves their verified immutable
+bytes. The recipe engine supplies these contract facts without parsing PC
+hardware. Config bytes remain unchanged and are rechecked by size and hash.
+
+Construction and machine locks remain unavailable in this build. After
+planning, acquisition and fact extraction succeed, build refuses with
+`machine templates are not built yet`. It does not call composition or
+construct disk or machine images.
 
 ## 7. Recipes as registry artifacts
 

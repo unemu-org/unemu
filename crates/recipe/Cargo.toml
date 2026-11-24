@@ -13,6 +13,7 @@ description = "Platform-neutral recipes: the typed model, the TOML 1.0 parser, t
 layer = "neutral"
 
 [dependencies]
+unemu-core-api.workspace = true
 image-store = { path = "../image-store", version = "0.0.5" }
 # The deflate decoder of zip members in a library, the version the lock
 # already holds.

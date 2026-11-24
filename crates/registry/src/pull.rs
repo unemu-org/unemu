@@ -31,7 +31,7 @@
 //! store, and the next pull fetches only the rest.
 
 use crate::{client::BlobBody, Client, Error, Reference, Result};
-use image_store::{media_type, ConfigValidator, Descriptor, Digest, Manifest, Store};
+use image_store::{media_type, BlobSource, ConfigValidator, Descriptor, Digest, Manifest, Store};
 use std::{
     collections::BTreeSet,
     io::{self, Read},
@@ -45,6 +45,90 @@ use std::{
 pub const PARALLEL_DOWNLOADS: usize = 4;
 /// Further requests per blob after an interrupted download.
 pub const DOWNLOAD_RETRIES: u32 = 3;
+
+/// Import a pinned closure in descriptor order without consulting or writing
+/// a tag. Package type and platform are checked before fetching any blobs.
+pub fn acquire_pinned(
+    store: &Store,
+    client: &Client,
+    source: &Reference,
+    artifact_type: &str,
+    platform: &str,
+    providers: &[&dyn ConfigValidator],
+) -> Result<Descriptor> {
+    let expected = source
+        .digest
+        .as_ref()
+        .ok_or_else(|| Error::Config("package acquisition requires a manifest digest".into()))?;
+    if source.host != client.host() {
+        return Err(Error::Config("client and source registry differ".into()));
+    }
+    let fetched = client
+        .manifest(&source.repository, &expected.to_string())?
+        .ok_or_else(|| Error::NotFound(source.to_string()))?;
+    let actual = Digest::of(&fetched.bytes);
+    if &actual != expected {
+        return Err(Error::DigestMismatch {
+            expected: expected.clone(),
+            actual,
+        });
+    }
+    store
+        .compatibility()
+        .check(&fetched.bytes, &source.to_string())?;
+    if fetched
+        .media_type
+        .as_deref()
+        .is_some_and(|t| t != media_type::MANIFEST)
+    {
+        return Err(Error::Protocol("unsupported manifest media type".into()));
+    }
+    let envelope = Manifest::decode_for_summary(&fetched.bytes)?;
+    if envelope.artifact_type() != artifact_type
+        || !image_store::platform::same(envelope.platform()?, platform)
+    {
+        return Err(Error::Protocol(
+            "package artifact type or platform mismatch".into(),
+        ));
+    }
+    let validator = crate::select_provider(providers, &envelope)?;
+    let manifest = Manifest::decode_with_types(&fetched.bytes, validator.payload_types())?;
+    let mut seen = BTreeSet::new();
+    for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        if !seen.insert(&descriptor.digest) {
+            continue;
+        }
+        match store.open_blob(&descriptor.digest, descriptor.size) {
+            Ok(_) => store.verify(&descriptor.digest, descriptor.size)?,
+            Err(image_store::Error::MissingBlob { .. }) => download(
+                store,
+                client,
+                &source.repository,
+                descriptor,
+                &|_| {},
+                &|| false,
+            )?,
+            Err(error) => return Err(error.into()),
+        }
+        if descriptor.digest == manifest.config.digest {
+            let config = store.read_verified(descriptor, image_store::MAX_SMALL_BLOB)?;
+            let required = validator.required_releases(&manifest, &config)?;
+            image_store::compat::Requirements {
+                core: image_store::compat::Requirement::Release(required.core),
+                frontend: image_store::compat::Requirement::Release(required.frontend),
+            }
+            .check(&source.to_string(), store.compatibility().levels(platform))?;
+        }
+    }
+    let image = Descriptor::new(
+        media_type::MANIFEST,
+        expected.clone(),
+        fetched.bytes.len() as u64,
+    );
+    store.import(fetched.bytes.as_slice(), Some(expected))?;
+    store.resolve_descriptor(&image, validator)?;
+    Ok(image)
+}
 
 /// What a running pull reports. Downloads run in parallel, so reports of
 /// different blobs interleave.

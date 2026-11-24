@@ -301,7 +301,7 @@ pub fn run(
         }
     };
     match command {
-        Command::Recipe(command) => recipe::execute(command, io, host, platforms),
+        Command::Recipe(command) => recipe::execute(command, io, host, platforms, cores),
         Command::Library(command) => {
             let result = library::execute(command, &mut *io.output, &mut *io.errors, host);
             finish(result, io)

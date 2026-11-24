@@ -23,6 +23,8 @@
 //! schema 1 and 2 writers accept (`image_store::metadata`).
 
 use image_store::media_set::MediaFormats;
+#[path = "template_facts.rs"]
+pub mod template_facts;
 use media::fat12::{
     plan_volumes, volume_label, DosTime, Entry, FloppyFormat, Order, ShortName, Volume,
     DEFAULT_SERIAL, MAX_FOLDER_PATH,
@@ -59,6 +61,20 @@ static VOLUMES: [FatVolume; 4] = [
 ];
 
 impl Provider for PcRecipes {
+    fn template_use(
+        &self,
+        store: &image_store::Store,
+        usage: &recipe::template::UsePlan,
+    ) -> Result<recipe::template::VerifiedUse, String> {
+        match usage.artifact_type()? {
+            image_store::media_type::FIRMWARE => {
+                template_facts::firmware_use(store, usage, crate::firmware::catalogue())
+            }
+            image_store::media_type::MEDIA_SET => template_facts::media_use(store, usage),
+            _ => Err("template use must name a firmware or media package".into()),
+        }
+    }
+
     fn core_platform_release(
         &self,
         platform: &str,

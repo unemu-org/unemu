@@ -70,6 +70,7 @@ pub mod spec;
 pub mod steps;
 pub mod store_index;
 mod syntax;
+pub mod template;
 mod zip;
 
 pub use check::{
@@ -497,10 +498,12 @@ pub fn plan_path(
         return Err(changed(path));
     };
     if recipe.kind == model::Kind::Machine {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "machine recipes are not built yet",
-        ));
+        return Ok(Planned::Plan(Box::new(plan::plan(
+            &recipe,
+            &path.display().to_string(),
+            path.parent(),
+            sources,
+        ))));
     }
     // A pinned recipe looks its outputs up by the payloads its lock names;
     // the checks opened the lock already.

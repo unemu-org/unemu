@@ -1831,6 +1831,18 @@ without a store), and 2 on a usage error. A library of the preferences
 that is not there is a warning for `library scan`, which scans the others,
 and `library ls` prints it as `missing`.
 
+A machine recipe in format 1.1 uses the same command:
+
+```sh
+cargo run --offline -p window -- recipe plan open-at.machine.toml --store /path/to/store --json
+```
+
+Its plan reports the config input, pinned firmware/media uses, declared
+disk ids and sizes, and one `name:version` machine output. A use is present
+by manifest digest, independently of its tag. A missing use names the
+registry pull that `--fetch` would authorize. JSON adds `uses` and `disks`
+arrays; planning downloads no package payloads.
+
 ## Building recipes
 
 `unemu recipe build` builds a recipe into the store
@@ -1847,6 +1859,18 @@ cargo run --offline -p window -- recipe build my.media.toml --fetch --store /pat
 cargo run --offline -p window -- recipe build my.media.toml --keep-as 1.0-mine-r1
 cargo run --offline -p window -- recipe build my.media.toml --deny-drift
 ```
+
+For a format 1.1 machine recipe, `recipe build ... --fetch` authorizes
+acquisition of missing firmware and media packages by their pinned
+manifest digests from each image reference's registry. Without consent,
+missing uses are reported like missing inputs. The selected core must
+advertise content bindings; otherwise the command refuses with
+`this core cannot compose templates` before downloads. Package identity,
+kind, platform, config and full payload hashes are verified and the
+platform provider extracts package-local item facts. After successful
+preparation this build still refuses with
+`machine templates are not built yet`: composition, image construction and
+machine locks are not available yet. Acquiring packages creates no tags.
 
 - The tag is `<name>:<release>-r<revision>` (`<name>:r<revision>` without a
   release), in the store of `--store DIR` or the default store, created

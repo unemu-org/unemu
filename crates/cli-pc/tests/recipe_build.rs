@@ -1063,41 +1063,90 @@ fn placements_bundle_inputs_are_listed_once_and_rebuild_their_lock() {
     }
 }
 
-#[test]
-fn machine_check_is_structural_and_plan_and_build_are_not_built_yet() {
-    let t = Temp::new("machine-static");
+fn machine_recipe(t: &Temp) -> PathBuf {
     let text = format!(
         "recipe = \"1.1\"\n[machine]\nname = \"unemu/machines/ibm-pc/open-at\"\nplatform = \"ibm-pc\"\nversion = \"1.3.0\"\n\n\
-         [template]\nconfig = \"config\"\n\n\
+         [template]\nconfig = \"config\"\ndisks = [{{ id = \"system\", size = 512 }}]\n\n\
          [license]\nexpression = \"CC0-1.0\"\n\n\
-         [input.config]\nname = \"open-at.toml\"\nsize = 1\nsha256 = \"{}\"\nbundle = true\n",
-        "0".repeat(64)
+         [input.config]\nname = \"open-at.toml\"\nsize = 1\nsha256 = \"{}\"\nbundle = true\n\n\
+         [use.bios]\nimage = \"private/firmware/ibm-pc/bios:r1\"\ndigest = \"sha256:{}\"\n",
+        sha(b"x"), "0".repeat(64)
     );
     let path = t.path("open-at.machine.toml");
     fs::write(&path, text).unwrap();
-    let file = path.to_str().unwrap();
-    let (code, output, errors) = upcli(&["recipe".into(), "check".into(), file.into()]);
-    assert_eq!(code, 0, "{output}{errors}");
-    assert!(
-        output.contains("machine recipe; required inputs: config"),
-        "{output}"
-    );
+    path
+}
+
+#[test]
+fn machine_plan_resolves_config_and_reports_pinned_uses_and_disks() {
+    let t = Temp::new("machine-plan");
+    let path = machine_recipe(&t);
     image_store::Store::open(t.path("store")).unwrap();
-    let _store = image_store::Store::open(t.path("store")).unwrap();
-    for verb in ["plan", "build"] {
-        let (code, output, errors) = upcli(&[
-            "recipe".into(),
-            verb.into(),
-            file.into(),
-            "--store".into(),
-            t.path("store").into_os_string(),
-        ]);
-        assert_ne!(code, 0, "{output}{errors}");
-        assert!(
-            format!("{output}{errors}").contains("machine recipes are not built yet"),
-            "{verb}: {output}{errors}"
-        );
+    for bundled in [false, true] {
+        if bundled {
+            fs::write(t.path("open-at.toml"), b"x").unwrap();
+        }
+        for json in [false, true] {
+            let mut args = words(&t, &path, &[]);
+            args[1] = "plan".into();
+            if json {
+                args.push("--json".into());
+            }
+            let (code, output, errors) = upcli(&args);
+            assert_eq!(code, 1, "{output}{errors}");
+            assert!(errors.is_empty(), "{errors}");
+            assert!(
+                output.contains("unemu/machines/ibm-pc/open-at:1.3.0"),
+                "{output}"
+            );
+            assert!(
+                output.contains("private/firmware/ibm-pc/bios:r1"),
+                "{output}"
+            );
+            assert!(output.contains("sha256:000000"), "{output}");
+            assert!(
+                output.contains("system") && output.contains("512"),
+                "{output}"
+            );
+            assert!(output.contains("--fetch"), "{output}");
+            assert!(!output.contains("schema_version"));
+            if json {
+                assert!(
+                    output.contains("\"uses\"") && output.contains("\"disks\""),
+                    "{output}"
+                );
+                assert!(
+                    output.contains(if bundled { "\"bundle\"" } else { "\"missing\"" }),
+                    "{output}"
+                );
+            } else {
+                assert!(
+                    output.contains(if bundled {
+                        "beside the recipe"
+                    } else {
+                        "missing"
+                    }),
+                    "{output}"
+                );
+            }
+        }
     }
+}
+
+#[test]
+fn machine_build_without_consent_reports_missing_uses_without_network() {
+    let t = Temp::new("machine-consent");
+    let path = machine_recipe(&t);
+    fs::write(t.path("open-at.toml"), b"x").unwrap();
+    let (code, output, errors) = upcli(&words(&t, &path, &[]));
+    assert_eq!(code, 1, "{output}{errors}");
+    assert!(
+        output.contains("use bios") && output.contains("--fetch"),
+        "{output}{errors}"
+    );
+    assert!(!output.contains("machine templates are not built yet"));
+    assert!(errors.is_empty(), "{errors}");
+    assert_eq!(tags(&image_store::Store::open(t.path("store")).unwrap()), 0);
 }
 
 #[test]
@@ -1163,5 +1212,298 @@ fn names_guard_publishes_after_the_whole_namespace_without_network() {
                 "{wrong}"
             );
         }
+    }
+}
+
+#[test]
+fn machine_core_without_bindings_is_refused_before_fetch() {
+    use unemu_core_api::{Core, CoreDescription, CreateRequest, Error, Machine};
+    struct NoBindings(CoreDescription);
+    impl Core for NoBindings {
+        fn description(&self) -> &CoreDescription {
+            &self.0
+        }
+        fn create(&self, _: &CreateRequest<'_>) -> Result<Box<dyn Machine>, Error> {
+            panic!("must not create a machine")
+        }
+    }
+    let mut description = *unemu_pc_core::PcCore.description();
+    let mut platforms = description.platforms.to_vec();
+    for platform in &mut platforms {
+        platform.content_bindings = false;
+    }
+    description.platforms = Box::leak(platforms.into_boxed_slice());
+    let core = Box::leak(Box::new(NoBindings(description)));
+    let cores: &'static [&'static dyn Core] = Box::leak(vec![core as &dyn Core].into_boxed_slice());
+    let t = Temp::new("machine-capability");
+    let path = machine_recipe(&t);
+    let mut args = words(&t, &path, &["--fetch"]);
+    args[1] = "build".into();
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let code = cli_pc::with_platform(|pc| {
+        cli_core::run(
+            &args,
+            &mut cli_core::Io {
+                output: &mut output,
+                errors: &mut errors,
+            },
+            &cli_core::HostSources::default(),
+            &[pc],
+            &core_launch::Cores::new(cores),
+        )
+    });
+    assert_ne!(code, 0);
+    let errors = String::from_utf8(errors).unwrap();
+    assert!(
+        errors.contains("this core cannot compose templates"),
+        "{errors}"
+    );
+    assert!(output.is_empty(), "{}", String::from_utf8_lossy(&output));
+}
+
+fn seed_template_media(
+    registry: &image_registry::test_support::MockRegistry,
+    repository: &str,
+    marker: u8,
+) -> (image_store::Digest, image_store::Manifest) {
+    use image_store::{media_type as mt, Descriptor, Manifest};
+    let bytes = vec![marker; 737_280];
+    let medium = Descriptor::new(
+        mt::FLOPPY,
+        registry.seed_blob(repository, &bytes),
+        bytes.len() as u64,
+    );
+    let config = image_store::media_set::Config {
+        schema: 1,
+        platform: "ibm-pc".into(),
+        media: vec![image_store::media_set::Medium {
+            id: "disk-1".into(),
+            label: "Disk 1".into(),
+            format: pc_image::media_set::format("720K").unwrap(),
+            blob: medium.digest.clone(),
+        }],
+        extras: Vec::new(),
+    }
+    .encode()
+    .unwrap();
+    let config = Descriptor::new(
+        mt::MEDIA_SET_CONFIG,
+        registry.seed_blob(repository, &config),
+        config.len() as u64,
+    );
+    let metadata = br#"{"schema":1,"platform":"ibm-pc","titles":[]}"#;
+    let metadata = Descriptor::new(
+        mt::METADATA,
+        registry.seed_blob(repository, metadata),
+        metadata.len() as u64,
+    );
+    let manifest = Manifest::new_media_set("ibm-pc", config, vec![medium, metadata]).unwrap();
+    (
+        registry.seed_manifest(repository, "1-r1", &manifest.encode().unwrap()),
+        manifest,
+    )
+}
+
+fn registry_machine(
+    t: &Temp,
+    host: &str,
+    repository: &str,
+    digest: &image_store::Digest,
+) -> PathBuf {
+    let path = machine_recipe(t);
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace(
+            "private/firmware/ibm-pc/bios:r1",
+            &format!("{repository}:1-r1"),
+        )
+        .replace(&format!("sha256:{}", "0".repeat(64)), &digest.to_string());
+    fs::write(&path, text).unwrap();
+    fs::write(t.path("open-at.toml"), b"x").unwrap();
+    fs::write(
+        t.path("preferences.toml"),
+        format!("default_registry='{host}'\n[[registries]]\nhost='{host}'\nplain_http=true\n"),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn machine_fetch_uses_digest_despite_moved_tag_and_preserves_descriptor_order() {
+    use image_registry::test_support::{MockRegistry, Policy};
+    let registry = MockRegistry::start(Policy {
+        anonymous_read: vec!["*".into()],
+        ..Default::default()
+    });
+    let repository = "private/media/ibm-pc/disks";
+    let (digest, manifest) = seed_template_media(&registry, repository, 17);
+    let (moved, _) = seed_template_media(&registry, repository, 99);
+    assert_ne!(digest, moved);
+    let t = Temp::new("machine-fetch-digest");
+    let path = registry_machine(&t, &registry.host(), repository, &digest);
+    let (code, output, errors) = upcli(&words(&t, &path, &[]));
+    assert_eq!(code, 1, "{output}{errors}");
+    assert!(output.contains("missing"), "{output}{errors}");
+    assert!(registry.log().is_empty(), "{:?}", registry.log());
+    let mut plan = words(&t, &path, &["--json"]);
+    plan[1] = "plan".into();
+    let (code, output, errors) = upcli(&plan);
+    assert_eq!(code, 1, "{output}{errors}");
+    assert!(registry.log().is_empty(), "{:?}", registry.log());
+    let (code, output, errors) = upcli(&words(&t, &path, &["--fetch"]));
+    assert_eq!(code, 1, "{output}{errors}");
+    assert!(
+        format!("{output}{errors}").contains("machine templates are not built yet"),
+        "{output}{errors}"
+    );
+    let log = registry.log();
+    assert!(
+        log.contains(&format!("GET /v2/{repository}/manifests/{digest}")),
+        "{log:?}"
+    );
+    assert!(
+        !log.iter()
+            .any(|r| r.ends_with("/manifests/1-r1") || r.contains("tags/list")),
+        "{log:?}"
+    );
+    let blobs: Vec<_> = log
+        .iter()
+        .filter(|r| r.starts_with("GET ") && r.contains("/blobs/"))
+        .cloned()
+        .collect();
+    let expected: Vec<_> = std::iter::once(&manifest.config)
+        .chain(&manifest.layers)
+        .map(|d| format!("GET /v2/{repository}/blobs/{}", d.digest))
+        .collect();
+    assert_eq!(blobs, expected);
+    let store = image_store::Store::open(t.path("store")).unwrap();
+    assert_eq!(tags(&store), 0);
+    let (code, output, errors) = upcli(&plan);
+    assert_eq!(code, 0, "{output}{errors}");
+    assert!(output.contains("\"present\""), "{output}");
+    registry.clear_log();
+    let (code, output, errors) = upcli(&words(&t, &path, &[]));
+    assert_eq!(code, 1, "{output}{errors}");
+    assert!(format!("{output}{errors}").contains("machine templates are not built yet"));
+    assert!(registry.log().is_empty());
+}
+
+#[test]
+fn machine_fetch_refuses_digest_type_platform_and_blob_mismatches() {
+    use image_registry::test_support::{MockRegistry, Policy};
+    for case in ["digest", "type", "platform", "blob", "unreadable"] {
+        let registry = MockRegistry::start(Policy {
+            anonymous_read: vec!["*".into()],
+            ..Default::default()
+        });
+        let repository = "private/media/ibm-pc/disks";
+        let (mut digest, mut manifest) = seed_template_media(&registry, repository, 42);
+        match case {
+            "digest" => {
+                digest = format!("sha256:{}", "0".repeat(64)).parse().unwrap();
+                registry.forge_manifest(repository, "1-r1", &digest, &manifest.encode().unwrap());
+            }
+            "type" => {
+                let bytes = String::from_utf8(manifest.encode().unwrap())
+                    .unwrap()
+                    .replace(
+                        image_store::media_type::MEDIA_SET,
+                        image_store::media_type::MACHINE,
+                    )
+                    .replace(
+                        image_store::media_type::MEDIA_SET_CONFIG,
+                        image_store::media_type::CONFIG,
+                    );
+                digest = registry.seed_manifest(repository, "1-r1", bytes.as_bytes());
+            }
+            "platform" => {
+                manifest
+                    .annotations
+                    .insert("unemu.platform".into(), "nes".into());
+                digest = registry.seed_manifest(repository, "1-r1", &manifest.encode().unwrap());
+            }
+            "blob" => registry.corrupt_blob(&manifest.layers[0].digest),
+            "unreadable" => {
+                let bytes = b"not a package";
+                manifest.config = image_store::Descriptor::new(
+                    image_store::media_type::MEDIA_SET_CONFIG,
+                    registry.seed_blob(repository, bytes),
+                    bytes.len() as u64,
+                );
+                digest = registry.seed_manifest(repository, "1-r1", &manifest.encode().unwrap());
+            }
+            _ => unreachable!(),
+        }
+        let t = Temp::new(&format!("machine-refusal-{case}"));
+        let path = registry_machine(&t, &registry.host(), repository, &digest);
+        let (code, output, errors) = upcli(&words(&t, &path, &["--fetch"]));
+        assert_ne!(code, 0, "{case}: {output}{errors}");
+        let refusal = format!("{output}{errors}");
+        assert!(
+            !refusal.contains("machine templates are not built yet"),
+            "{case}: {refusal}"
+        );
+        assert!(
+            refusal.contains(match case {
+                "digest" => "registry content does not match its digest",
+                "blob" => "does not match",
+                "type" => "artifact type or platform mismatch",
+                "platform" => "platform",
+                _ => "invalid",
+            }),
+            "{case}: {refusal}"
+        );
+        if ["digest", "type", "platform"].contains(&case) {
+            assert!(
+                !registry.log().iter().any(|r| r.contains("/blobs/")),
+                "{:?}",
+                registry.log()
+            );
+        }
+        assert_eq!(tags(&image_store::Store::open(t.path("store")).unwrap()), 0);
+    }
+}
+
+#[test]
+fn machine_registry_fixture_is_portable_and_selects_the_configured_registry() {
+    let t = Temp::new("machine-registry-config");
+    let repository = "private/media/ibm-pc/disks";
+    let digest = image_store::Digest::of(b"pinned manifest");
+    let mut previous = None;
+    for host in ["127.0.0.1:5000", "127.0.0.1:5001"] {
+        let path = registry_machine(&t, host, repository, &digest);
+        let checked =
+            recipe::check_paths(std::slice::from_ref(&path), recipe::Providers(&PROVIDERS))
+                .unwrap();
+        assert!(checked.is_clean(), "{}", checked.render());
+        let planned = recipe::plan_path(
+            &path,
+            recipe::Providers(&PROVIDERS),
+            recipe::plan::Sources {
+                store: None,
+                downloads: None,
+                libraries: &mut [],
+            },
+        )
+        .unwrap();
+        let recipe::Planned::Plan(plan) = planned else {
+            panic!("expected a machine plan");
+        };
+        let usage = &plan.uses[0];
+        assert_eq!(usage.image, format!("{repository}:1-r1"));
+        assert_eq!(usage.digest, digest.to_string());
+        let preferences = fs::read_to_string(t.path("preferences.toml")).unwrap();
+        let config = image_registry::RegistryConfig::from_toml(&preferences).unwrap();
+        let default_host = config.default_host(None, None).unwrap();
+        assert_eq!(default_host, host);
+        assert!(config.entry(host).unwrap().plain_http);
+        let resolved = image_registry::Reference::parse(&usage.image, &default_host).unwrap();
+        assert_eq!(resolved.host, host);
+        assert_eq!(resolved.repository, repository);
+        let text = fs::read_to_string(path).unwrap();
+        if let Some(previous) = previous {
+            assert_eq!(text, previous);
+        }
+        previous = Some(text);
     }
 }

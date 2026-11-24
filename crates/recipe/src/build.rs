@@ -1412,7 +1412,7 @@ fn draft(
         .and_then(|staged| publisher.publish(store, &staged))
 }
 
-enum FetchError {
+pub(crate) enum FetchError {
     /// No missing required file input has a URL.
     Cannot,
     Failed(String),
@@ -1421,7 +1421,7 @@ enum FetchError {
 /// Download missing required file inputs with URLs into the download cache,
 /// once per hash and size, after printing what will be downloaded. A download
 /// is kept only when its size and SHA-256 are the pinned ones.
-fn fetch_missing(
+pub(crate) fn fetch_missing(
     plan: &Plan,
     downloads: &Path,
     fetcher: &dyn Fetcher,

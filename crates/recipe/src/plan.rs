@@ -190,6 +190,8 @@ pub struct LibraryPlan {
 /// The plan of one recipe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
+    pub uses: Vec<crate::template::UsePlan>,
+    pub disks: Vec<(String, u64)>,
     pub file: String,
     pub kind: Kind,
     pub name: Option<String>,
@@ -274,6 +276,21 @@ struct OutputRef {
 fn outputs(recipe: &Recipe) -> Vec<OutputRef> {
     let mut out = Vec::new();
     let value = |v: &Option<crate::model::At<String>>| v.as_ref().map(|v| v.value.clone());
+    if let Some(template) = &recipe.template {
+        let reference = format!(
+            "{}:{}",
+            value(&recipe.identity.name).unwrap_or_default(),
+            crate::build::tag(recipe)
+        );
+        out.push(OutputRef {
+            kind: "machine",
+            index: 0,
+            id: reference.clone(),
+            label: reference,
+            from: value(&template.config).into_iter().collect(),
+            optional: false,
+        });
+    }
     for (index, medium) in recipe.media.iter().enumerate() {
         out.push(OutputRef {
             kind: "medium",
@@ -893,7 +910,9 @@ fn plan_with(
             })
         })
         .collect();
-    Plan {
+    let mut plan = Plan {
+        uses: Vec::new(),
+        disks: Vec::new(),
         file: file.to_owned(),
         kind: recipe.kind,
         name: recipe.identity.name.as_ref().map(|n| n.value.clone()),
@@ -914,7 +933,9 @@ fn plan_with(
         payloads,
         steps,
         outputs,
-    }
+    };
+    crate::template::extend_plan(recipe, &mut plan);
+    plan
 }
 
 /// The lower-case SHA-256 of a file, read in pieces.
@@ -970,19 +991,22 @@ fn not_needed(
 impl Plan {
     /// Every input the artifact needs is found or not needed.
     pub fn complete(&self) -> bool {
-        self.inputs
-            .iter()
-            .all(|i| i.optional || !matches!(i.status, Status::Missing(_)))
+        self.uses.iter().all(|u| u.present)
+            && self
+                .inputs
+                .iter()
+                .all(|i| i.optional || !matches!(i.status, Status::Missing(_)))
     }
 
     /// The summary line of recipes §3.5.
     pub fn summary(&self) -> String {
         let own: Vec<&InputPlan> = self.inputs.iter().filter(|i| !i.optional).collect();
-        let total = own.len();
+        let total = own.len() + self.uses.len();
         let missing = own
             .iter()
             .filter(|i| matches!(i.status, Status::Missing(_)))
-            .count();
+            .count()
+            + self.uses.iter().filter(|u| !u.present).count();
         let not_needed = own.iter().any(|i| matches!(i.status, Status::NotNeeded(_)));
         let optional_missing = self
             .inputs
@@ -1058,6 +1082,18 @@ impl Plan {
             ));
         }
         out.push_str("inputs:\n");
+        for usage in &self.uses {
+            out.push_str(&format!(
+                "  use {}: {} @ {}: {}\n",
+                usage.id,
+                usage.image,
+                usage.digest,
+                usage.availability()
+            ));
+        }
+        for (id, size) in &self.disks {
+            out.push_str(&format!("  disk {id}: {size} bytes\n"));
+        }
         for input in &self.inputs {
             let optional = if input.optional { " (optional)" } else { "" };
             out.push_str(&format!("  {} ({}){optional}: ", input.id, input.name));
@@ -1176,6 +1212,14 @@ impl Plan {
     /// payloads.
     pub fn json(&self) -> Json {
         let mut object = self.json_common();
+        if self.kind == Kind::Machine {
+            object["uses"] = json!(self.uses.iter().map(|u| json!({"id": u.id, "image": u.image, "digest": u.digest, "status": if u.present { "present" } else { "missing" }, "action": u.availability()})).collect::<Vec<_>>());
+            object["disks"] = json!(self
+                .disks
+                .iter()
+                .map(|(id, size)| json!({"id":id,"size":size}))
+                .collect::<Vec<_>>());
+        }
         if let (Json::Object(map), Some(lock)) = (&mut object, &self.lock_lost) {
             map.insert("lock_lost".into(), json!(lock.display().to_string()));
         }

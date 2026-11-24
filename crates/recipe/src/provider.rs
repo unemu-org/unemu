@@ -16,6 +16,15 @@ use image_store::needs::Vocabulary;
 
 /// The provider of one platform family.
 pub trait Provider {
+    /// Verify a pinned package and expose only its declared logical items.
+    fn template_use(
+        &self,
+        _store: &image_store::Store,
+        _usage: &crate::template::UsePlan,
+    ) -> Result<crate::template::VerifiedUse, String> {
+        Err("this platform cannot read template packages".into())
+    }
+
     /// The core-owned rating of the platform spelling a recipe envelope writes.
     fn core_platform_release(
         &self,

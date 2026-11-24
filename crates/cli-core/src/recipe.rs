@@ -422,6 +422,7 @@ pub fn execute(
     io: &mut Io<'_>,
     host: &HostSources,
     platforms: &[&dyn CliPlatform],
+    cores: &core_launch::Cores,
 ) -> u8 {
     let providers: Vec<&dyn recipe::provider::Provider> = platforms
         .iter()
@@ -438,7 +439,7 @@ pub fn execute(
         RecipeCommand::Show(path) => show(&path, providers, &mut io.output, &mut io.errors),
         RecipeCommand::Plan(options) => plan(&options, providers, host, io),
         RecipeCommand::Build(options) => {
-            build_command(&options, false, providers, host, platforms, io)
+            build_command(&options, false, providers, host, platforms, cores, io)
         }
         RecipeCommand::BuildDenyDrift(options) => {
             if let Ok(report) = recipe::check_paths(std::slice::from_ref(&options.path), providers)
@@ -451,10 +452,10 @@ pub fn execute(
                     };
                 }
             }
-            build_command(&options, false, providers, host, platforms, io)
+            build_command(&options, false, providers, host, platforms, cores, io)
         }
         RecipeCommand::Pin(options) => {
-            build_command(&options, true, providers, host, platforms, io)
+            build_command(&options, true, providers, host, platforms, cores, io)
         }
         RecipeCommand::Conformance(options) => conformance(&options, false, providers, host, io),
         RecipeCommand::ConformanceAllowDrafts(options) => {
@@ -479,29 +480,17 @@ fn build_command(
     providers: recipe::Providers<'_>,
     host: &HostSources,
     platforms: &[&dyn CliPlatform],
+    cores: &core_launch::Cores,
     io: &mut Io<'_>,
 ) -> u8 {
-    let fetcher = if options.fetch {
-        match image_registry::download::Downloader::new() {
-            Ok(downloader) => Some(HttpsFetcher(downloader)),
-            Err(error) => {
-                let _ = writeln!(
-                    io.errors,
-                    "unemu recipe {}: {error}",
-                    if pin { "pin" } else { "build" }
-                );
-                return 2;
-            }
-        }
-    } else {
-        None
-    };
-    build(
+    let fetcher = options.fetch.then_some(DefaultFetcher);
+    build_with_cores(
         options,
         pin,
         providers,
         host,
         platforms,
+        Some(cores),
         fetcher.as_ref().map(|d| d as &dyn recipe::build::Fetcher),
         io,
     )
@@ -1028,6 +1017,15 @@ impl recipe::build::Fetcher for HttpsFetcher {
     }
 }
 
+struct DefaultFetcher;
+impl recipe::build::Fetcher for DefaultFetcher {
+    fn fetch(&self, url: &str, size: u64, sink: &mut dyn Write) -> Result<(), String> {
+        image_registry::download::Downloader::new()
+            .map_err(|e| e.to_string())?
+            .fetch(url, size, sink)
+    }
+}
+
 /// Build a recipe into the store, or with `pin` pin it: `--store`, or the
 /// default store, created when it does not exist yet.
 pub fn build(
@@ -1036,6 +1034,20 @@ pub fn build(
     providers: recipe::Providers<'_>,
     host: &HostSources,
     platforms: &[&dyn CliPlatform],
+    fetcher: Option<&dyn recipe::build::Fetcher>,
+    io: &mut Io<'_>,
+) -> u8 {
+    build_with_cores(options, pin, providers, host, platforms, None, fetcher, io)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_with_cores(
+    options: &BuildOptions,
+    pin: bool,
+    providers: recipe::Providers<'_>,
+    host: &HostSources,
+    platforms: &[&dyn CliPlatform],
+    cores: Option<&core_launch::Cores>,
     fetcher: Option<&dyn recipe::build::Fetcher>,
     io: &mut Io<'_>,
 ) -> u8 {
@@ -1130,7 +1142,15 @@ pub fn build(
             Err(error) => Err(error),
         }
     } else {
-        recipe::build::build_path(request, &mut log)
+        recipe::template::build_path(
+            request,
+            &|platform| cores.and_then(|cores| cores.for_platform(platform)),
+            options.fetch.then_some(&RegistryAcquire {
+                config: options.config.as_deref(),
+                platforms,
+            } as &dyn recipe::template::Acquire),
+            &mut log,
+        )
     };
     save_libraries(&libraries, &caches, command, io);
     let (text, code) = match outcome {
@@ -1455,4 +1475,35 @@ fn record(merged: &Merged, drift: &[recipe::lock::Difference]) -> String {
         out.push('\n');
     }
     out
+}
+
+struct RegistryAcquire<'a> {
+    config: Option<&'a Path>,
+    platforms: &'a [&'a dyn CliPlatform],
+}
+impl recipe::template::Acquire for RegistryAcquire<'_> {
+    fn acquire(
+        &self,
+        store: &image_store::Store,
+        usage: &recipe::template::UsePlan,
+        platform: &str,
+    ) -> Result<(), String> {
+        let attempt = || -> anyhow::Result<()> {
+            let (mut source, _, client) =
+                super::image::registry::resolve(None, self.config, &usage.image)?;
+            source.digest = Some(usage.digest.parse()?);
+            source.tag = None;
+            let validators: Vec<_> = self.platforms.iter().flat_map(|p| p.validators()).collect();
+            image_registry::pull::acquire_pinned(
+                store,
+                &client,
+                &source,
+                usage.artifact_type().map_err(anyhow::Error::msg)?,
+                platform,
+                &validators,
+            )?;
+            Ok(())
+        };
+        attempt().map_err(|e| format!("use {}: {e:#}", usage.id))
+    }
 }
