@@ -229,13 +229,22 @@ fn validate_repository(repository: &str) -> Result<()> {
     Ok(())
 }
 
-/// A namespace is one repository path component, the first one of the
-/// repositories it holds.
+/// A namespace uses the same path-segment grammar as a repository.
 pub(crate) fn validate_namespace(name: &str) -> Result<()> {
-    if name.contains('/') {
-        return Err(bad(format!("invalid namespace name: {name}")));
-    }
     validate_repository(name)
+}
+
+/// Whether a repository or scope belongs to the official open-content tree.
+pub fn is_official_namespace(name: &str) -> bool {
+    name == OFFICIAL_NAMESPACE || name.starts_with("unemu/")
+}
+
+/// A namespace holds its own name and descendants at a segment boundary.
+pub fn namespace_holds(namespace: &str, repository: &str) -> bool {
+    repository == namespace
+        || repository
+            .strip_prefix(namespace)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(crate) fn validate_tag(tag: &str) -> Result<()> {

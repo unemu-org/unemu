@@ -257,7 +257,7 @@ impl Place {
 pub fn under_namespace(path: &str, namespace: Option<&str>) -> String {
     let mut parts: Vec<&str> = path.split('/').collect();
     if let Some(namespace) = namespace {
-        if parts.first() == Some(&namespace) {
+        if image_registry::reference::namespace_holds(namespace, path) {
             return path.into();
         }
     }
@@ -539,7 +539,7 @@ impl Rules {
             return entry
                 .namespaces
                 .iter()
-                .map(|n| (n.name.clone(), n.private && n.name != OFFICIAL_NAMESPACE))
+                .map(|n| (n.name.clone(), entry.scope(&n.name).private()))
                 .collect();
         }
         let mut names: BTreeSet<String> = self
@@ -618,19 +618,30 @@ impl Rules {
     }
 
     /// The place a destination falls in: its registry, and the namespace
-    /// its first path component names, when the registry has it.
+    /// selected by the longest matching scope on the registry.
     pub fn place_of(&self, target: &Reference) -> (Place, String) {
         let entry = self.config.entry_or_public(&target.host);
         let namespaces = self.namespaces(&entry);
-        match target.repository.split_once('/') {
-            Some((first, rest)) if namespaces.iter().any(|(n, _)| n == first) => (
+        match namespaces
+            .iter()
+            .filter(|(name, _)| {
+                image_registry::reference::namespace_holds(name, &target.repository)
+            })
+            .max_by_key(|(name, _)| name.len())
+        {
+            Some((name, _)) => (
                 Place {
                     host: target.host.clone(),
-                    namespace: Some(first.into()),
+                    namespace: Some(name.clone()),
                 },
-                rest.into(),
+                target
+                    .repository
+                    .strip_prefix(name)
+                    .unwrap_or(&target.repository)
+                    .trim_start_matches('/')
+                    .into(),
             ),
-            _ => (
+            None => (
                 Place {
                     host: target.host.clone(),
                     namespace: None,
@@ -653,7 +664,7 @@ impl Rules {
             entry
                 .namespaces
                 .iter()
-                .find(|n| n.private && n.name != OFFICIAL_NAMESPACE)
+                .find(|n| entry.scope(&n.name).private())
                 .map(|n| Place {
                     host: entry.host.clone(),
                     namespace: Some(n.name.clone()),
@@ -1052,6 +1063,48 @@ mod tests {
             preferences: None,
             listing: Listing::default(),
             env,
+        }
+    }
+
+    #[test]
+    fn nested_namespaces_push_here_keeps_full_scope_and_privacy() {
+        let rules = rules(
+            r#"[[registries]]
+            host = "registry.example"
+            namespaces = [{ name = "unemu" }, { name = "unemu/experimental" }, { name = "lab" }, { name = "lab/private", private = true }]
+        "#,
+            Default::default(),
+        );
+        let entry = rules.config.entry("registry.example").unwrap();
+        assert_eq!(
+            rules.namespaces(&entry),
+            vec![
+                ("unemu".into(), false),
+                ("unemu/experimental".into(), false),
+                ("lab".into(), false),
+                ("lab/private".into(), true)
+            ]
+        );
+        for (path, namespace, relative, private) in [
+            (
+                "unemu/experimental/media/freedos",
+                "unemu/experimental",
+                "media/freedos",
+                false,
+            ),
+            ("lab/private/image", "lab/private", "image", true),
+            ("lab/privateer/image", "lab", "privateer/image", false),
+        ] {
+            let target =
+                Reference::parse(&format!("registry.example/{path}:1.0.0"), DEFAULT_REGISTRY)
+                    .unwrap();
+            let (place, name) = rules.place_of(&target);
+            assert_eq!(place.namespace.as_deref(), Some(namespace));
+            assert_eq!(name, relative);
+            assert_eq!(entry.scope(&target.repository).private(), private);
+            assert_eq!(under_namespace(path, Some(namespace)), path);
+            let local = image(&format!("{relative}:1.0.0"), None, &[]);
+            assert_eq!(rule_destination(&local, Some(&place)).0.unwrap(), target);
         }
     }
 

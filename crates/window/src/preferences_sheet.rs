@@ -404,12 +404,36 @@ fn editor_modal(ctx: &egui::Context, page: &mut RegistriesPage) {
                     );
                     small(
                         ui,
-                        "Comma-separated, such as unemu, private. The box below marks each listed namespace private; NAME:public or NAME:private sets one on its own. unemu/ is always public, open content only. A push into a namespace not listed here is refused.",
+                        "Comma-separated paths, without a leading or trailing slash. Each segment uses lowercase letters and digits with . _ __ or - separators. NAME:public or NAME:private sets privacy for that scope.",
                     );
+                    if let Some(message) = editor.namespace_error() {
+                        error(ui, &message);
+                    }
                 });
                 ui.end_row();
             });
         ui.checkbox(&mut editor.private, "Private registry");
+        small(ui, "Default for listed namespaces without a suffix. All unemu/ scopes stay public.");
+        if editor.can_save() {
+            let preview = editor.privacy_preview();
+            if preview.is_empty() {
+                small(ui, if editor.private { "Whole registry: private, with unemu/ always public." } else { "Whole registry: public." });
+            } else {
+                egui::Grid::new("registry-privacy-preview").num_columns(3).striped(true).show(ui, |ui| {
+                    ui.label("Namespace");
+                    ui.label("Private");
+                    ui.label("Reason");
+                    ui.end_row();
+                    for mut row in preview {
+                        ui.label(&row.name);
+                        ui.add_enabled(false, egui::Checkbox::without_text(&mut row.private));
+                        ui.add(egui::Label::new(row.reason).wrap());
+                        ui.end_row();
+                    }
+                });
+            }
+        }
+        small(ui, "Unchecking Private does not publish content. These marks control push eligibility; the registry enforces access.");
         small(
             ui,
             "Images with user-supplied content may be pushed only to a private registry or namespace, never into unemu/. Before the first such push, anonymous access is probed and must be refused. There is no override.",
@@ -430,7 +454,7 @@ fn editor_modal(ctx: &egui::Context, page: &mut RegistriesPage) {
                 cancel = true;
             }
             let label = if editor.original.is_some() { "Save" } else { "Add" };
-            if ui.button(label).clicked() {
+            if ui.add_enabled(editor.can_save(), egui::Button::new(label)).clicked() {
                 submit = true;
             }
         });
@@ -776,7 +800,7 @@ mod tests {
         assert!(shown.iter().any(|t| t == "empty = the whole registry"));
         assert!(shown
             .iter()
-            .any(|t| t.contains("unemu/ is always public, open content only")));
+            .any(|t| t.contains("All unemu/ scopes stay public.")));
     }
 
     #[test]

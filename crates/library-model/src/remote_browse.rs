@@ -102,7 +102,7 @@ use image_registry::{
     browse::{self, MIN_APP_VERSION},
     client::Challenge,
     config::Scope,
-    reference::OFFICIAL_NAMESPACE,
+    reference::{is_official_namespace, OFFICIAL_NAMESPACE},
     Client, Error, Reference, RegistryEntry, DEFAULT_REGISTRY,
 };
 use image_store::{
@@ -510,6 +510,22 @@ pub struct RepositoryRow {
 }
 
 impl RepositoryRow {
+    /// The list label within a namespace; registry-wide lists keep the full path.
+    pub fn label(&self, namespace: Option<&str>) -> &str {
+        namespace
+            .and_then(|name| self.name.strip_prefix(name))
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(&self.name)
+    }
+
+    /// The complete reference for details and row hover text.
+    pub fn reference(&self, host: &str, tag: Option<&str>) -> String {
+        match tag {
+            Some(tag) => format!("{host}/{}:{tag}", self.name),
+            None => format!("{host}/{}", self.name),
+        }
+    }
+
     pub fn row(&self, tag: &str) -> Option<&TagRow> {
         self.read.iter().find(|row| row.tag == tag)
     }
@@ -1658,8 +1674,8 @@ pub enum Action {
 /// One namespace node under a registry.
 #[derive(Debug)]
 pub struct Namespace<'a> {
-    /// The first path component; `None` for repositories whose name is a
-    /// single component.
+    /// The configured scope path, or a catalog first component; `None` for
+    /// top-level repositories in a whole-registry entry.
     pub name: Option<String>,
     /// The entry marks it private, so it lists only with a login.
     pub private: bool,
@@ -1787,11 +1803,11 @@ impl RegistryView {
                 .iter()
                 .map(|namespace| Namespace {
                     name: Some(namespace.name.clone()),
-                    private: namespace.private && namespace.name != OFFICIAL_NAMESPACE,
+                    private: self.entry.scope(&namespace.name).private(),
                     repositories: self
                         .repositories
                         .iter()
-                        .filter(|r| first(&r.name).as_deref() == Some(namespace.name.as_str()))
+                        .filter(|r| matches!(self.entry.scope(&r.name), Scope::Namespace { name, .. } if name == namespace.name))
                         .collect(),
                 })
                 .collect();
@@ -1806,8 +1822,8 @@ impl RegistryView {
         groups
             .into_iter()
             .map(|(name, repositories)| Namespace {
+                private: self.entry.private && !name.as_deref().is_some_and(is_official_namespace),
                 name,
-                private: self.entry.private,
                 repositories,
             })
             .collect()
@@ -2892,6 +2908,70 @@ mod tests {
     }
 
     #[test]
+    fn nested_namespaces_labels_keep_full_references() {
+        let row = row("unemu/experimental/media/freedos");
+        assert_eq!(row.label(Some("unemu/experimental")), "media/freedos");
+        assert_eq!(row.label(Some("unemu")), "experimental/media/freedos");
+        assert_eq!(row.label(Some("unemu/exp")), row.name);
+        assert_eq!(row.label(None), row.name);
+        assert_eq!(
+            row.reference("registry.example", Some("1.4-r1")),
+            "registry.example/unemu/experimental/media/freedos:1.4-r1"
+        );
+    }
+
+    #[test]
+    fn nested_namespaces_catalog_belongs_to_longest_scope_once() {
+        let repositories = [
+            "unemu/media/freedos",
+            "unemu/experimental/media/freedos-append",
+            "unemu/experimental",
+            "other/image",
+        ];
+        for nested in [true, false] {
+            let scopes = if nested {
+                r#"{ name = "unemu" }, { name = "unemu/experimental" }"#
+            } else {
+                r#"{ name = "unemu" }"#
+            };
+            let view = view(
+                &format!("host = \"registry.example\"\nnamespaces = [{scopes}]"),
+                &repositories,
+            );
+            assert!(!listed_under(&view.entry, repositories[3]));
+            assert!(repositories[..3]
+                .iter()
+                .all(|name| listed_under(&view.entry, name)));
+            let groups = grouped(&view);
+            assert_eq!(
+                groups
+                    .iter()
+                    .map(|(_, _, repos)| repos.len())
+                    .sum::<usize>(),
+                3
+            );
+            assert_eq!(
+                groups[0].2,
+                if nested {
+                    vec![repositories[0]]
+                } else {
+                    repositories[..3].to_vec()
+                }
+            );
+            if nested {
+                assert_eq!(
+                    groups[1],
+                    (
+                        Some("unemu/experimental".into()),
+                        false,
+                        repositories[1..3].to_vec()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
     fn whole_registry_entries_group_repositories_by_their_first_path_component() {
         let repositories = [
             "unemu/open-at",
@@ -2911,7 +2991,7 @@ mod tests {
                     true,
                     vec!["private/media/monkey-island", "private/games/dune2"]
                 ),
-                (Some("unemu".into()), true, vec!["unemu/open-at"]),
+                (Some("unemu".into()), false, vec!["unemu/open-at"]),
             ]
         );
         // An entry that names namespaces shows those, in its order.

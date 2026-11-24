@@ -7,8 +7,8 @@
 //! system's credential store (see [`crate::credentials`]). Unknown preference
 //! keys are ignored so the desktop shell and this crate can share one file.
 //!
-//! Privacy is set for the whole registry or per namespace, the first path
-//! component of a repository. An entry without namespaces keeps the older
+//! Privacy is set for the whole registry or per namespace, a path prefix
+//! matched at a segment boundary. An entry without namespaces keeps the older
 //! form, one `private` flag for every repository:
 //!
 //! ```toml
@@ -37,7 +37,10 @@
 //! drops a key another one wrote meanwhile.
 
 use crate::{
-    reference::{validate_host, validate_namespace, DEFAULT_REGISTRY, OFFICIAL_NAMESPACE},
+    reference::{
+        is_official_namespace, namespace_holds, validate_host, validate_namespace,
+        DEFAULT_REGISTRY, OFFICIAL_NAMESPACE,
+    },
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
@@ -73,8 +76,8 @@ pub struct RegistryEntry {
     pub namespaces: Vec<Namespace>,
 }
 
-/// One namespace of a registry entry: the first path component of the
-/// repositories it holds, such as `private` for `private/games`.
+/// One namespace of a registry entry: a path prefix of the repositories it
+/// holds, such as `lab/private` for `lab/private/games`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Namespace {
@@ -158,24 +161,28 @@ impl RegistryEntry {
         }
     }
 
-    /// Where `repository` falls on this registry. A repository is in a
-    /// namespace only below it: `private/games` is in `private`, a repository
-    /// named just `private` is not. The official namespace is never private,
-    /// whatever the entry says.
+    /// The longest configured prefix at a segment boundary owns a repository.
+    /// Official scopes stay public even for entries constructed outside config loading.
     pub fn scope(&self, repository: &str) -> Scope {
         if self.namespaces.is_empty() {
             return Scope::WholeRegistry {
-                private: self.private,
+                private: self.private && !is_official_namespace(repository),
             };
         }
-        let first = repository.split_once('/').map(|(first, _)| first);
-        match first.and_then(|name| self.namespaces.iter().find(|n| n.name == name)) {
+        match self
+            .namespaces
+            .iter()
+            .filter(|n| namespace_holds(&n.name, repository))
+            .max_by_key(|n| n.name.len())
+        {
             Some(namespace) => Scope::Namespace {
                 name: namespace.name.clone(),
-                private: namespace.private && namespace.name != OFFICIAL_NAMESPACE,
+                private: namespace.private && !is_official_namespace(&namespace.name),
             },
             None => Scope::Unlisted {
-                namespace: first.map(str::to_owned),
+                namespace: repository
+                    .split_once('/')
+                    .map(|(first, _)| first.to_owned()),
             },
         }
     }
@@ -223,10 +230,17 @@ impl RegistryConfig {
         let preferences: Preferences = toml::Value::Table(relevant)
             .try_into()
             .map_err(|e: toml::de::Error| config(e))?;
-        let parsed = Self {
+        let mut parsed = Self {
             default_registry: preferences.default_registry,
             registries: preferences.registries,
         };
+        for entry in &mut parsed.registries {
+            for namespace in &mut entry.namespaces {
+                if let Some(name) = namespace.name.strip_suffix('/') {
+                    namespace.name = name.to_owned();
+                }
+            }
+        }
         parsed.validate()?;
         Ok(parsed)
     }
@@ -366,33 +380,34 @@ impl Exposed {
 /// are refused. The official namespace never counts, because it is never
 /// private.
 pub fn made_public(current: &EntrySettings, next: &EntrySettings) -> Option<Exposed> {
-    let public_in_next = |name: &str| {
-        if next.namespaces.is_empty() {
-            !next.private
+    if current.namespaces.is_empty() && next.namespaces.is_empty() {
+        return (current.private && !next.private).then_some(Exposed::WholeRegistry);
+    }
+    let privacy = |settings: &EntrySettings, name: &str| {
+        if settings.namespaces.is_empty() {
+            Some(settings.private)
         } else {
-            next.namespaces.iter().any(|n| n.name == name && !n.private)
+            settings
+                .namespaces
+                .iter()
+                .filter(|n| namespace_holds(&n.name, name))
+                .max_by_key(|n| n.name.len())
+                .map(|n| n.private)
         }
     };
-    let names: Vec<String> = if current.namespaces.is_empty() {
-        if !current.private {
-            return None;
-        }
-        if next.namespaces.is_empty() {
-            return (!next.private).then_some(Exposed::WholeRegistry);
-        }
-        next.namespaces
-            .iter()
-            .filter(|n| !n.private && n.name != OFFICIAL_NAMESPACE)
-            .map(|n| n.name.clone())
-            .collect()
-    } else {
-        current
-            .namespaces
-            .iter()
-            .filter(|n| n.private && n.name != OFFICIAL_NAMESPACE && public_in_next(&n.name))
-            .map(|n| n.name.clone())
-            .collect()
-    };
+    let mut seen = std::collections::BTreeSet::new();
+    let names: Vec<String> = current
+        .namespaces
+        .iter()
+        .chain(&next.namespaces)
+        .filter(|n| seen.insert(n.name.as_str()))
+        .filter(|n| {
+            !is_official_namespace(&n.name)
+                && privacy(current, &n.name) == Some(true)
+                && privacy(next, &n.name) == Some(false)
+        })
+        .map(|n| n.name.clone())
+        .collect();
     (!names.is_empty()).then_some(Exposed::Namespaces(names))
 }
 
@@ -510,7 +525,7 @@ pub fn set_privacy(
 /// One namespace as typed: `NAME`, optionally with a trailing `/`, and an
 /// optional `:private` or `:public`; without one it is private when `private`
 /// is set. The official namespace stays public without a suffix, because it
-/// is never private, and `unemu:private` is refused.
+/// is never private, including descendants; a private mark is refused.
 pub fn parse_namespace(item: &str, private: bool) -> Result<Namespace> {
     let item = item.trim();
     let (name, marked) = match item.rsplit_once(':') {
@@ -523,13 +538,14 @@ pub fn parse_namespace(item: &str, private: bool) -> Result<Namespace> {
         }
         None => (item, None),
     };
-    let name = name.trim().trim_end_matches('/');
+    let name = name.trim();
+    let name = name.strip_suffix('/').unwrap_or(name);
     validate_namespace(name).map_err(|_| {
         config(format!(
-            "namespace {name:?}: use lowercase letters and digits, separated by . _ or -, and no further /"
+            "namespace {name:?}: use slash-separated segments of lowercase letters and digits with . _ __ or - separators"
         ))
     })?;
-    let official = name == OFFICIAL_NAMESPACE;
+    let official = is_official_namespace(name);
     if official && marked == Some(true) {
         return Err(config(official_never_private()));
     }
@@ -563,7 +579,7 @@ pub fn namespaces_field(namespaces: &[Namespace], private: bool) -> String {
     namespaces
         .iter()
         .map(|n| {
-            if n.private == private || n.name == OFFICIAL_NAMESPACE {
+            if n.private == private || is_official_namespace(&n.name) {
                 n.name.clone()
             } else if n.private {
                 format!("{}:private", n.name)
@@ -617,7 +633,7 @@ fn validate_namespaces(host: &str, private: bool, namespaces: &[Namespace]) -> R
                 namespace.name
             )));
         }
-        if namespace.private && namespace.name == OFFICIAL_NAMESPACE {
+        if namespace.private && is_official_namespace(&namespace.name) {
             return Err(config(format!("{host}: {}", official_never_private())));
         }
     }
@@ -1049,6 +1065,124 @@ mod tests {
     }
 
     #[test]
+    fn nested_namespaces_parse_and_round_trip_with_segment_grammar() {
+        let parsed = parse_namespaces(
+            "unemu, unemu/experimental, lab:public, lab/private:private, a.b/c__d/e--f",
+            true,
+        )
+        .unwrap();
+        for private in [false, true] {
+            assert_eq!(
+                parse_namespaces(&namespaces_field(&parsed, private), private).unwrap(),
+                parsed
+            );
+        }
+        for invalid in [
+            "/lab",
+            "lab//child",
+            "lab/Upper",
+            "lab/a___b",
+            "lab/.child",
+            "lab/a..b",
+            "lab/a-",
+            "lab/é",
+        ] {
+            assert!(parse_namespace(invalid, false).is_err(), "{invalid}");
+        }
+        assert!(parse_namespaces("lab/private:public, lab/private:private", false).is_err());
+        assert!(parse_namespace("unemu/experimental:private", false).is_err());
+        let config = RegistryConfig::from_toml(
+            r#"[[registries]]
+            host = "registry.example"
+            namespaces = [{ name = "unemu/experimental/" }, { name = "lab/" }]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.registries[0].namespaces,
+            [
+                namespace("unemu/experimental", false),
+                namespace("lab", false)
+            ]
+        );
+        assert!(RegistryConfig::from_toml(
+            r#"[[registries]]
+            host = "registry.example"
+            namespaces = [{ name = "unemu/experimental", private = true }]
+        "#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn nested_namespaces_public_edits_check_inherited_privacy() {
+        let settings = |namespaces| EntrySettings {
+            private: false,
+            namespaces,
+            plain_http: false,
+        };
+        let parent = settings(vec![namespace("lab", false)]);
+        let child = settings(vec![
+            namespace("lab", false),
+            namespace("lab/private", true),
+        ]);
+        assert_eq!(
+            made_public(&child, &parent),
+            Some(Exposed::Namespaces(vec!["lab/private".into()]))
+        );
+        let private_parent = settings(vec![namespace("lab", true)]);
+        let public_child = settings(vec![namespace("lab", true), namespace("lab/public", false)]);
+        assert_eq!(
+            made_public(&private_parent, &public_child),
+            Some(Exposed::Namespaces(vec!["lab/public".into()]))
+        );
+    }
+
+    #[test]
+    fn nested_namespaces_scope_uses_longest_segment_prefix() {
+        let entry = RegistryEntry {
+            namespaces: vec![
+                namespace("lab", false),
+                namespace("lab/private", true),
+                namespace("unemu/exp", false),
+                namespace("unemu/experimental", true),
+            ],
+            ..RegistryEntry::builtin("registry.example")
+        };
+        for repository in ["lab/private", "lab/private/x"] {
+            assert_eq!(
+                entry.scope(repository),
+                Scope::Namespace {
+                    name: "lab/private".into(),
+                    private: true
+                }
+            );
+        }
+        assert_eq!(
+            entry.scope("lab/privateer/x"),
+            Scope::Namespace {
+                name: "lab".into(),
+                private: false
+            }
+        );
+        assert_eq!(
+            entry.scope("unemu/experimental/x"),
+            Scope::Namespace {
+                name: "unemu/experimental".into(),
+                private: false
+            }
+        );
+        let mut boundary = entry.clone();
+        boundary
+            .namespaces
+            .retain(|n| n.name != "unemu/experimental");
+        assert!(matches!(
+            boundary.scope("unemu/experimental/x"),
+            Scope::Unlisted { .. }
+        ));
+    }
+
+    #[test]
     fn old_and_namespaced_entries_read_and_write_back_unchanged() {
         let old = "[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n";
         let nas = RegistryConfig::from_toml(old)
@@ -1085,8 +1219,13 @@ mod tests {
                 namespace: Some("owner".into())
             }
         );
-        // A repository named like a namespace is not inside it.
-        assert_eq!(entry.scope("private"), Scope::Unlisted { namespace: None });
+        assert_eq!(
+            entry.scope("private"),
+            Scope::Namespace {
+                name: "private".into(),
+                private: true
+            }
+        );
         assert_eq!(
             entry.scope("private/a").to_string(),
             "private/ is marked private"
@@ -1131,7 +1270,7 @@ mod tests {
             entry("{ name = \"private\", private = true }", "private = true\n"),
             entry("{ name = \"a\" }, { name = \"a\", private = true }", ""),
             entry("{ name = \"Private\" }", ""),
-            entry("{ name = \"a/b\" }", ""),
+            entry("{ name = \"a//b\" }", ""),
             entry("{ name = \"*\" }", ""),
             entry("{ name = \"\" }", ""),
             entry("{ name = \"a\", public = true }", ""),
@@ -1162,7 +1301,7 @@ mod tests {
                 namespace("games", false)
             ]
         );
-        for text in ["unemu:private", "a, a:private", "a/b", "a:secret", "UPPER"] {
+        for text in ["unemu:private", "a, a:private", "a//b", "a:secret", "UPPER"] {
             assert!(parse_namespaces(text, true).is_err(), "{text}");
         }
         assert!(parse_namespace("unemu:private", false)

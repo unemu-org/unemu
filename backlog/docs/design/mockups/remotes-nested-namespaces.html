@@ -1,0 +1,425 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remotes: nested namespaces — design mock-up</title>
+<style>
+:root {
+  --desk: #5f7f86; --face: #d6d3cb; --face-2: #e7e4dc; --hi: #ffffff; --lo: #8d8a83; --dk: #3f3d39;
+  --ink: #1d1c1a; --muted: #5b5852; --title-a: #13336f; --title-b: #4b79c1; --title-ink: #ffffff;
+  --sel: #22468a; --sel-ink: #ffffff; --field: #ffffff; --stripe: #f3f1ea; --warn: #8a5300; --warn-bg: #fff3cc;
+  --good: #1f6b33; --good-bg: #e3f4e5; --bad: #9b1c1c; --bad-bg: #fbe3e1; --note: #eef3f3; --link: #1b4a96;
+  --radius: 0px;
+  --ui: Tahoma, Verdana, "Segoe UI", system-ui, sans-serif;
+  --code: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --out: inset -1px -1px var(--dk), inset 1px 1px var(--hi), inset -2px -2px var(--lo), inset 2px 2px var(--face-2);
+  --in: inset 1px 1px var(--lo), inset -1px -1px var(--hi), inset 2px 2px var(--dk), inset -2px -2px var(--face-2);
+  --thin-in: inset 1px 1px var(--lo), inset -1px -1px var(--hi);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: #1d2a2d; --face: #34363a; --face-2: #3e4045; --hi: #5c5f66; --lo: #1f2023; --dk: #0f1011;
+    --ink: #e6e4df; --muted: #a9a6a0; --title-a: #1b2f57; --title-b: #3a5f99; --title-ink: #f2f5fb;
+    --sel: #3c64b0; --sel-ink: #ffffff; --field: #26282b; --stripe: #2c2e32; --warn: #ffcf73; --warn-bg: #3e3320;
+    --good: #8fd6a0; --good-bg: #1f3624; --bad: #ff9d92; --bad-bg: #40211f; --note: #dfe8e8; --link: #a9c6ff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --desk: #1d2a2d; --face: #34363a; --face-2: #3e4045; --hi: #5c5f66; --lo: #1f2023; --dk: #0f1011;
+  --ink: #e6e4df; --muted: #a9a6a0; --title-a: #1b2f57; --title-b: #3a5f99; --title-ink: #f2f5fb;
+  --sel: #3c64b0; --sel-ink: #ffffff; --field: #26282b; --stripe: #2c2e32; --warn: #ffcf73; --warn-bg: #3e3320;
+  --good: #8fd6a0; --good-bg: #1f3624; --bad: #ff9d92; --bad-bg: #40211f; --note: #dfe8e8; --link: #a9c6ff; color-scheme: dark;
+}
+/* "Modern" skin: same structure, flat controls. Only overrides tokens and the title bars. */
+:root[data-skin="modern"] { --radius: 6px; --out: 0 0 0 1px var(--lo); --in: inset 0 0 0 1px var(--lo); --thin-in: inset 0 0 0 1px var(--lo); }
+:root[data-skin="modern"] .titlebar { background: var(--face); color: var(--ink); }
+:root[data-skin="modern"] .tbtn { box-shadow: none; background: transparent; }
+
+/* Classic tokens, bevels, fonts and 16 px SVGs follow remotes.html;
+   tabs, forms and namespace suffixes follow registry-accounts.html.
+   crates/library-ui/src/remotes.rs:336 COLUMNS, :371 ROW = 20,
+   :373 TWISTY = 11, :381 TREE_INDENT = 14, :383 META_SIZE = 11.
+   Name is widened for this catalog comparison; the other columns keep COLUMNS widths. */
+* { box-sizing: border-box; }
+body { margin: 0; padding: 18px 16px 26px; background: var(--desk); color: var(--ink); font: 12px/1.35 var(--ui); }
+button, input { font: inherit; color: inherit; }
+button { cursor: default; }
+:focus-visible { outline: 1px dotted currentColor; outline-offset: -3px; }
+[hidden] { display: none !important; }
+p { margin: 6px 0; }
+h1 { margin: 0 0 6px; font-size: 16px; }
+h2 { margin: 0 0 6px; font-size: 15px; }
+h3 { margin: 0 0 6px; font-size: 12px; }
+code { font: 11px var(--code); overflow-wrap: anywhere; }
+.note { max-width: 1180px; margin: 0 0 12px; color: var(--note); }
+.note p { max-width: 100ch; }
+.ctrls, .btnrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.btn, .ctrls button { background: var(--face); border: 0; box-shadow: var(--out); padding: 4px 12px; border-radius: var(--radius); white-space: nowrap; }
+.btn:active:not(:disabled), .ctrls button[aria-pressed="true"] { box-shadow: var(--in); }
+.btn.default { box-shadow: 0 0 0 1px var(--dk), var(--out); }
+button:disabled, .hint, .muted, small { color: var(--muted); }
+.compare { display: grid; grid-template-columns: 1180px 1180px; gap: 20px; width: max-content; }
+.screen { margin: 20px 0 0; }
+.caption { color: var(--note); margin: 0 0 8px; }
+.rationale { max-width: 1180px; color: var(--note); margin: 12px 0 24px; }
+.app { width: 1180px; background: var(--face); box-shadow: var(--out), 0 18px 50px #0006; padding: 3px; border-radius: var(--radius); }
+.titlebar { display: flex; align-items: center; gap: 6px; padding: 3px 3px 3px 6px; background: linear-gradient(90deg, var(--title-a), var(--title-b)); color: var(--title-ink); font-weight: 700; }
+.titlebar .t { flex: 1; min-width: 0; }
+.tbtn { width: 18px; height: 16px; display: grid; place-items: center; background: var(--face); color: var(--ink); box-shadow: var(--out); border: 0; padding: 0; font: 700 10px/1 var(--ui); }
+.menubar { display: flex; gap: 2px; padding: 1px 0; }
+.menubar span { padding: 3px 8px; }
+.toolbar { display: flex; gap: 6px; padding: 6px 4px; border-top: 1px solid var(--lo); box-shadow: inset 0 1px var(--hi); align-items: center; }
+.toolbar .grow { flex: 1; }
+.ico { width: 16px; height: 16px; flex: none; vertical-align: -3px; }
+input:not([type="checkbox"]) { background: var(--field); border: 0; box-shadow: var(--in); padding: 5px 6px; min-width: 0; width: 100%; border-radius: var(--radius); }
+input[type="checkbox"] { accent-color: var(--sel); }
+.body { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 3px; margin-top: 2px; height: 700px; }
+.pane { background: var(--field); box-shadow: var(--in); min-width: 0; overflow: auto; }
+.tree { padding: 6px 4px; }
+.tree-h { margin: 0 4px 4px; font-weight: 700; }
+.tree-h.remotes-h { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--lo); }
+.tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; }
+.tree > ul { padding-left: 0; }
+.tree li { padding: 1px 0; }
+.line { display: flex; align-items: center; gap: 2px; }
+.node { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; text-align: left; border: 0; background: transparent; padding: 3px 4px; white-space: nowrap; }
+.node > span { overflow: hidden; text-overflow: ellipsis; }
+.node small { font-size: 11px; }
+.node[aria-current="page"] { background: var(--sel); color: var(--sel-ink); }
+.node[aria-current="page"] small { color: var(--sel-ink); }
+.tw { width: 11px; height: 11px; flex: none; padding: 0; border: 0; font: 9px/9px var(--code); text-align: center; box-shadow: inset 0 0 0 1px var(--lo); background: var(--field); color: var(--ink); }
+.tw.blank { box-shadow: none; background: transparent; }
+.right { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.banner { padding: 6px 8px; background: var(--field); box-shadow: var(--thin-in); border-left: 4px solid var(--title-b); }
+.grid { flex: 0 0 390px; }
+table { border-collapse: collapse; width: 100%; }
+.repo-table { width: 1356px; table-layout: fixed; }
+th { background: var(--face); box-shadow: var(--out); text-align: left; font-weight: 400; padding: 3px 6px; }
+.repo-table th { position: sticky; top: 0; }
+.repo-table td { height: 20px; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+tbody tr:nth-child(even) { background: var(--stripe); }
+.repo-table tbody tr { cursor: default; }
+.repo-table tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); }
+.details { flex: 1; min-height: 0; padding: 12px; background: var(--face-2); box-shadow: var(--in); }
+dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; }
+dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+.empty { height: 100%; display: grid; place-content: center; padding: 24px; text-align: center; }
+.statusbar { display: flex; gap: 2px; margin-top: 2px; }
+.statusbar span { box-shadow: var(--thin-in); padding: 3px 6px; }
+.statusbar .grow { flex: 1; }
+.dlg { width: 780px; margin: 0; background: var(--face); box-shadow: var(--out), 6px 6px #0004; padding: 3px; }
+.bd { padding: 12px; }
+.tabs { display: flex; padding-left: 2px; }
+.tabs span { background: var(--face); box-shadow: inset 1px 1px var(--hi), inset -1px 0 var(--dk), inset -2px 0 var(--lo); padding: 3px 9px; margin-top: 2px; }
+.tabs .active { margin-top: 0; padding-bottom: 5px; position: relative; top: 1px; }
+.tabpanel { box-shadow: var(--out); padding: 12px; }
+.form { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 7px 10px; align-items: center; }
+.form .col2 { grid-column: 2; }
+.form .hint { font-size: 11px; margin-top: -3px; }
+.check { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 4px; }
+.reason { display: block; font-size: 11px; margin-top: 3px; }
+.privacy { margin: 10px 0; }
+.privacy td { padding: 6px; vertical-align: top; }
+.privacy th:nth-child(2) { width: 65px; }
+.privacy input { margin: 0; }
+.inline-error { color: var(--bad); font-size: 11px; }
+input[aria-invalid="true"] { outline: 1px solid var(--bad); outline-offset: -2px; }
+.ft { display: flex; justify-content: flex-end; gap: 7px; padding: 4px 12px 12px; }
+.validation { width: 780px; margin-top: 14px; }
+.validation .pane { padding: 10px; }
+.validation label { display: block; margin-bottom: 3px; }
+.validation .inline-error { display: block; margin: 3px 0 10px; }
+.demo { width: 1180px; color: var(--note); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; padding: 6px 8px; border: 1px dashed var(--note); }
+@media print { body { background: white; } .note, .caption, .rationale { color: black; } }
+</style>
+</head>
+<body>
+<header class="note">
+  <h1>Remotes: namespaces with several path segments</h1>
+  <p><strong>Design mock-up — revision 1 — approved by the maintainer on 2026-11-24.</strong> Public catalog supplied on 2026-11-23: 16 repositories, 5 regular and 11 experimental. Paths are real; tags, sizes and manifest metadata are deliberately omitted. No network requests or saved settings.</p>
+  <p>Both comparisons use fixed pixel sizes: 1180 px library windows and 780 px settings dialogs, 12 px UI text and 20 px repository rows. Scroll the page horizontally to compare; no scaling.</p>
+  <div class="ctrls"><button type="button" id="themeBtn">Theme: system</button><button type="button" id="skinBtn">Skin: classic</button></div>
+</header>
+<!-- Current behavior sources (1-based lines):
+     crates/registry/src/reference.rs:16 DEFAULT_REGISTRY, :18 OFFICIAL_NAMESPACE;
+     :200 validate_repository component grammar, :234 validate_namespace rejects /.
+     crates/registry/src/config.rs:165 RegistryEntry::scope matches first segment;
+     :514 parse_namespace trims trailing /; :544 parse_namespaces checks duplicates;
+     :600 validate_namespaces validates config names and official privacy.
+     crates/library-model/src/remote_browse.rs:1253 listed_under uses scope;
+     :1745 RegistryView::namespaces groups by first segment.
+     crates/library-ui/src/remotes.rs:121 Node::holds filters by first segment;
+     :462 tree_lines emits registry -> namespace -> artifact group (no repository leaves);
+     :508 appends / to namespace labels, :583 tree_line paints nodes;
+     :936 repository_row uses full repository.name at :943 (no relative-name stripping).
+     crates/pc-ui/src/library_view/remotes.rs:7 re-exports library_ui::remotes.
+     Registry names in the supplied catalog imply firmware/media groups for illustration;
+     runtime grouping comes from manifest artifactType, not the repository path.
+-->
+<main>
+<section class="screen" aria-labelledby="treeTitle">
+  <h2 class="caption" id="treeTitle">1. Remotes</h2>
+  <div class="compare">
+    <div>
+      <h3 class="caption">Now — first segment only; full repository labels</h3>
+      <div class="demo ctrls"><span>Mock-up control — current entry:</span><button type="button" data-current="both" aria-pressed="true">unemu, experimental</button><button type="button" data-current="only" aria-pressed="false">experimental only → empty</button></div>
+      <div id="nowWindow"></div>
+    </div>
+    <div>
+      <h3 class="caption">Proposed — unemu and unemu/experimental as sibling scopes</h3>
+      <div class="demo"><span>Click either namespace or its artifact group. Each repository belongs to the longest matching prefix at a slash boundary.</span></div>
+      <div id="nextWindow"></div>
+    </div>
+  </div>
+  <p class="rationale"><strong>Recommendation:</strong> keep configured namespaces as siblings and keep artifact groups beneath them. Nesting would express the path hierarchy, but would make a public parent appear to contain its separately scoped child and add an unnecessary tree level. Here <code>unemu/</code> owns 5 repositories and <code>unemu/experimental/</code> owns 11, with no duplicates. Use labels relative to the selected namespace; keep the complete reference in details and row hover text. This is a proposed label change: today the sidebar ends at artifact groups and the list uses full paths. A registry-wide view keeps full paths to avoid ambiguity.</p>
+</section>
+<!-- Settings sources:
+     crates/window/src/preferences_sheet.rs:364 editor_modal, :399 Namespaces field,
+     :406 comma-separated/suffix help, :412 Private registry checkbox, :427 errors.
+     crates/library-model/src/registries_model.rs:545 submit_editor,
+     :577 parse_namespaces errors shown on submit today.
+     crates/registry/src/config.rs:562 namespaces_field serializes suffixes.
+     crates/registry/src/guard.rs:362 official guard uses the first segment;
+     nested unemu/... must remain public on every host.
+     The live field validation and per-namespace privacy preview below are proposals.
+-->
+<section class="screen" aria-labelledby="settingsTitle">
+  <h2 class="caption" id="settingsTitle">2. Tools › Preferences › Registries › Add… / Edit…</h2>
+  <div class="compare">
+    <div>
+      <h3 class="caption">Now — comma-separated names, errors after Save</h3>
+      <div class="dlg" aria-label="Current registry editor">
+        <div class="titlebar"><span class="t">Edit registry registry.unemu.dev</span><span aria-hidden="true">×</span></div>
+        <div class="bd">
+          <div class="tabs"><span>General</span><span>Library</span><span class="active">Registries</span></div>
+          <div class="tabpanel">
+            <div class="form">
+              <span>Host</span><span>registry.unemu.dev</span>
+              <label for="currentNs">Namespaces</label><input id="currentNs" value="unemu, experimental" readonly>
+              <span class="hint col2">Comma-separated, such as unemu, private. The box below marks each listed namespace private; NAME:public or NAME:private sets one on its own. unemu/ is always public, open content only.</span>
+            </div>
+            <label class="check"><input type="checkbox" disabled><span>Private registry<span class="reason">Used as the default for listed namespaces, except unemu/.</span></span></label>
+            <label class="check"><input type="checkbox" disabled><span>Allow plain HTTP (test registry on this computer only)</span></label>
+          </div>
+        </div>
+        <div class="ft"><button class="btn default" type="button" disabled>Save</button><button class="btn" type="button" disabled>Cancel</button></div>
+      </div>
+      <div class="validation">
+        <h3 class="caption">Current parser: a slash inside a name is refused</h3>
+        <div class="pane">
+          <label for="currentBad">Namespaces</label><input id="currentBad" value="unemu, unemu/experimental" readonly aria-invalid="true" aria-describedby="currentBadError">
+          <span class="inline-error" id="currentBadError">Namespaces: namespace "unemu/experimental": use lowercase letters and digits, separated by . _ or -, and no further /.</span>
+          <p class="hint">The current parser accepts a trailing slash by trimming it. The proposed field instead asks for a path without a trailing slash. Existing one-segment configuration names remain valid.</p>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h3 class="caption">Proposed — same field; inline validation and explicit privacy</h3>
+      <div class="demo ctrls" style="width:780px"><span>Mock-up examples:</span><button type="button" data-example="official">Official scopes</button><button type="button" data-example="private">Public parent / private child</button></div>
+      <form class="dlg" id="settingsForm" aria-label="Proposed registry editor">
+        <div class="titlebar"><span class="t" id="editorTitle">Edit registry registry.unemu.dev</span><span aria-hidden="true">×</span></div>
+        <div class="bd">
+          <div class="tabs"><span>General</span><span>Library</span><span class="active">Registries</span></div>
+          <div class="tabpanel">
+            <div class="form">
+              <span>Host</span><span id="editorHost">registry.unemu.dev</span>
+              <label for="namespaces">Namespaces</label><input id="namespaces" value="unemu, unemu/experimental" autocomplete="off" spellcheck="false" aria-describedby="nsHelp nsError">
+              <span class="hint col2" id="nsHelp">Comma-separated paths, without a leading or trailing slash. Each segment uses lowercase letters and digits with . _ __ or - separators. NAME:public or NAME:private sets privacy for that scope.</span>
+              <span class="inline-error col2" id="nsError" aria-live="polite"></span>
+            </div>
+            <label class="check"><input type="checkbox" id="defaultPrivate"><span>Private registry<span class="reason">Default for listed namespaces without a suffix. All unemu/ scopes stay public.</span></span></label>
+            <div class="pane privacy"><table aria-label="Effective namespace privacy"><thead><tr><th>Namespace</th><th>Private</th><th>Reason</th></tr></thead><tbody id="privacyRows"></tbody></table></div>
+            <p class="hint" id="privacyHint">Unchecking Private does not publish content. These marks control push eligibility; the registry enforces access.</p>
+            <label class="check"><input type="checkbox" disabled><span>Allow plain HTTP (test registry on this computer only)</span></label>
+            <p class="hint" id="scopeExample"></p>
+          </div>
+        </div>
+        <div class="ft"><span id="saveStatus" role="status"></span><button class="btn default" type="submit" id="saveBtn">Save</button><button class="btn" type="button" id="resetBtn">Cancel</button></div>
+      </form>
+      <div class="validation">
+        <h3 class="caption">Proposed inline error states — Save disabled until corrected</h3>
+        <div class="pane">
+          <label for="emptySegment">Empty segment</label><input id="emptySegment" value="unemu//experimental" readonly aria-invalid="true" aria-describedby="emptyError">
+          <span class="inline-error" id="emptyError">Empty segment between slashes. Use unemu/experimental.</span>
+          <label for="upperSegment">Uppercase</label><input id="upperSegment" value="unemu/Experimental" readonly aria-invalid="true" aria-describedby="upperError">
+          <span class="inline-error" id="upperError">Segment “Experimental” must use lowercase letters.</span>
+          <label for="trailingSlash">Trailing slash</label><input id="trailingSlash" value="unemu/experimental/" readonly aria-invalid="true" aria-describedby="trailingError">
+          <span class="inline-error" id="trailingError">Remove the trailing slash: unemu/experimental.</span>
+          <label for="duplicateNs">Duplicate</label><input id="duplicateNs" value="unemu, unemu/experimental, unemu/experimental" readonly aria-invalid="true" aria-describedby="duplicateError">
+          <span class="inline-error" id="duplicateError">Namespace “unemu/experimental” is listed twice.</span>
+          <p class="hint">Type any example into the field above to try it. Overlapping names are valid; duplicate names are rejected regardless of privacy suffix.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="rationale"><strong>Recommendation:</strong> retain the existing comma-separated field and suffixes, validate each path segment as it is typed, and show errors directly below the field. Add a compact privacy preview: disable Private with “Always public: open content only under unemu/” for the official scope and every descendant, on every registry. Elsewhere, each scope has its own setting: <code>lab/private:private</code> overrides public <code>lab</code> for its repositories because the longest prefix wins. A checked box changes push eligibility only; the existing anonymous-read probe must still refuse access before a push of user-supplied content.</p>
+</section>
+</main>
+<script>
+'use strict';
+const ICON = {
+  M: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="8.5" fill="none" stroke="currentColor"/><path d="M5 14h6M8 11v3" stroke="currentColor"/></svg>',
+  I: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l6 3-6 3-6-3z" fill="none" stroke="currentColor"/><path d="M2 8l6 3 6-3M2 11l6 3 6-3" fill="none" stroke="currentColor"/></svg>',
+  D: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="1.5" width="11" height="13" fill="none" stroke="currentColor"/><rect x="5" y="1.5" width="6" height="4" fill="none" stroke="currentColor"/></svg>',
+  F: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" fill="none" stroke="currentColor"/><path d="M6 1v2.5M10 1v2.5M6 12.5V15M10 12.5V15M1 6h2.5M1 10h2.5M12.5 6H15M12.5 10H15" stroke="currentColor"/></svg>',
+  T: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1.5h7l3 3v10H3z" fill="none" stroke="currentColor"/><path d="M5 7h6M5 9.5h6M5 12h4" stroke="currentColor"/></svg>',
+  R: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="4" fill="none" stroke="currentColor"/><rect x="2.5" y="9.5" width="11" height="4" fill="none" stroke="currentColor"/><path d="M5 4.5h1M5 11.5h1" stroke="currentColor"/></svg>',
+  N: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h5l1.5 1.5h6.5v8.5h-13z" fill="none" stroke="currentColor"/></svg>',
+  L: '<svg class="ico lock" viewBox="0 0 16 16" role="img" aria-label="locked until you log in"><rect x="3.5" y="7.5" width="9" height="7" fill="none" stroke="currentColor"/><path d="M5.5 7.5V5a2.5 2.5 0 0 1 5 0v2.5" fill="none" stroke="currentColor"/><path d="M8 10v2" stroke="currentColor"/></svg>'
+};
+
+const $ = id => document.getElementById(id);
+const esc = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const HOST = 'registry.unemu.dev';
+const firmware = ['unemu-at-bios-1.0.2-unemu.3', 'vgabios-0.9d-unemu.1-std', 'xub-r638-xtp-ata1f0'];
+const media = ['freedos', 'kenslab'];
+const experimentalMedia = ['freedos-append', 'freedos-comp', 'freedos-find', 'freedos-label', 'freedos-mem', 'freedos-tree', 'freedos', 'kenslab'];
+const catalog = [
+  ...firmware.map(n => 'unemu/experimental/firmware/ibm-pc/' + n),
+  ...experimentalMedia.map(n => 'unemu/experimental/media/ibm-pc/' + n),
+  ...firmware.map(n => 'unemu/firmware/ibm-pc/' + n),
+  ...media.map(n => 'unemu/media/ibm-pc/' + n)
+];
+const repos = [...new Set(catalog)].sort();
+const types = [{ key: 'media', label: 'Installation media', icon: ICON.D }, { key: 'firmware', label: 'Firmware', icon: ICON.F }];
+const typeOf = repo => repo.includes('/firmware/') ? 'firmware' : 'media';
+const state = { now: { names: ['unemu', 'experimental'], ns: 'unemu', type: '', repo: '' }, next: { names: ['unemu', 'unemu/experimental'], ns: 'unemu/experimental', type: '', repo: '' } };
+// A namespace matches only below name + '/': experimental-other is not experimental.
+function owner(repo, names, proposed) {
+  if (!proposed) return names.find(n => repo.split('/')[0] === n);
+  return names.filter(n => repo.startsWith(n + '/')).sort((a, b) => b.length - a.length)[0];
+}
+function owned(side, ns) { return repos.filter(r => owner(r, state[side].names, side === 'next') === ns); }
+function node(side, ns, type, label, count, icon) {
+  const current = state[side].ns === ns && state[side].type === type;
+  return '<button type="button" class="node" data-side="' + side + '" data-ns="' + esc(ns) + '" data-type="' + type + '" title="' + esc(ns + '/') + '"' + (current ? ' aria-current="page"' : '') + '>' + icon + '<span>' + esc(label) + '</span><small>(' + count + ')</small></button>';
+}
+function tree(side) {
+  let html = '<p class="tree-h">Library</p><ul>';
+  [['Machines', ICON.M], ['Images', ICON.I], ['Installation media', ICON.D], ['Firmware', ICON.F], ['Machine files', ICON.T]].forEach(([label, icon]) => {
+    html += '<li><div class="line"><span class="tw blank"></span><span class="node">' + icon + '<span>' + label + '</span></span></div></li>';
+  });
+  html += '</ul><p class="tree-h remotes-h">Remotes</p><ul><li><div class="line"><span class="tw" aria-hidden="true">−</span><span class="node">' + ICON.R + '<span title="' + HOST + '">' + HOST + '</span></span></div><ul>';
+  state[side].names.forEach(ns => {
+    const rows = owned(side, ns);
+    html += '<li><div class="line"><span class="tw' + (rows.length ? '' : ' blank') + '" aria-hidden="true">' + (rows.length ? '−' : '') + '</span>' + node(side, ns, '', ns + '/', rows.length, ICON.N) + '</div>';
+    if (rows.length) {
+      html += '<ul>';
+      types.forEach(t => {
+        const count = rows.filter(r => typeOf(r) === t.key).length;
+        if (count) html += '<li><div class="line"><span class="tw blank"></span>' + node(side, ns, t.key, t.label, count, t.icon) + '</div></li>';
+      });
+      html += '</ul>';
+    }
+    html += '</li>';
+  });
+  return html + '</ul></li></ul>';
+}
+function renderWindow(side) {
+  const s = state[side];
+  const rows = owned(side, s.ns).filter(r => !s.type || typeOf(r) === s.type);
+  if (!rows.includes(s.repo)) s.repo = rows[0] || '';
+  const columns = ['Name', 'Source', 'Title', 'Latest', 'Type', 'Licence', 'Size', 'Local state'];
+  const widths = [502, 140, 160, 78, 128, 100, 78, 170];
+  const table = '<table class="repo-table" aria-label="' + (side === 'now' ? 'Current' : 'Proposed') + ' repositories"><colgroup>' + widths.map(w => '<col style="width:' + w + 'px">').join('') + '</colgroup><thead><tr>' + columns.map(c => '<th>' + c + '</th>').join('') + '</tr></thead><tbody>' + rows.map(repo => {
+    const t = types.find(t => t.key === typeOf(repo));
+    const label = side === 'next' ? repo.slice(s.ns.length + 1) : repo;
+    return '<tr tabindex="0" data-repo="' + esc(repo) + '" data-side="' + side + '" title="' + HOST + '/' + esc(repo) + '" aria-selected="' + (s.repo === repo) + '"><td>' + t.icon + ' ' + esc(label) + '</td><td>' + HOST + '</td><td>—</td><td>—</td><td>' + t.label + '</td><td>—</td><td>—</td><td>—</td></tr>';
+  }).join('') + '</tbody></table>';
+  const empty = '<div class="empty"><h2>No repositories</h2><p>No catalog path starts with <code>experimental/</code>.</p><p class="hint">The supplied paths start with <code>unemu/experimental/</code>.</p></div>';
+  $(side === 'now' ? 'nowWindow' : 'nextWindow').innerHTML = '<div class="app"><div class="titlebar"><span class="t">Machine library</span><span aria-hidden="true">_ □ ×</span></div><div class="menubar"><span>File</span><span>Edit</span><span>Image</span><span>Machine</span><span>View</span><span>Tools</span><span>Help</span></div><div class="toolbar"><button class="btn" type="button" disabled>Pull…</button><button class="btn" type="button" disabled>Refresh</button><button class="btn" type="button" disabled>Registries…</button><span class="grow"></span><span class="hint">Catalog snapshot · public · anonymous</span></div><div class="body"><nav class="pane tree" aria-label="' + side + ' remotes">' + tree(side) + '</nav><div class="right"><div class="banner"><strong>' + esc(s.ns) + '/</strong> · ' + rows.length + ' repositories · public</div><div class="pane grid">' + (rows.length ? table : empty) + '</div><section class="details" aria-label="Selected repository"><h2>' + (s.repo ? 'Repository' : 'Empty namespace') + '</h2><dl><dt>Full reference</dt><dd><code>' + (s.repo ? HOST + '/' + esc(s.repo) : '—') + '</code></dd><dt>Namespace</dt><dd>' + esc(s.ns) + '/</dd><dt>Access</dt><dd>Public · open content only</dd></dl><p class="hint">' + (side === 'now' ? 'Current: the list label includes the complete repository path.' : 'Proposed: the label removes exactly the owning namespace and its slash.') + '</p><p class="hint">Tags and other manifest facts are outside this catalog-only comparison.</p></section></div></div><div class="statusbar"><span class="grow">' + rows.length + ' repositories in this view</span><span>Design preview</span></div></div>';
+}
+document.addEventListener('click', event => {
+  const n = event.target.closest('button[data-ns]');
+  if (n) { Object.assign(state[n.dataset.side], { ns: n.dataset.ns, type: n.dataset.type }); renderWindow(n.dataset.side); }
+  const r = event.target.closest('tr[data-repo]');
+  if (r) { state[r.dataset.side].repo = r.dataset.repo; renderWindow(r.dataset.side); }
+  const current = event.target.closest('[data-current]');
+  if (current) {
+    const only = current.dataset.current === 'only';
+    Object.assign(state.now, { names: only ? ['experimental'] : ['unemu', 'experimental'], ns: only ? 'experimental' : 'unemu', type: '' });
+    document.querySelectorAll('[data-current]').forEach(b => b.setAttribute('aria-pressed', String(b === current)));
+    renderWindow('now');
+  }
+});
+document.addEventListener('keydown', event => {
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('tr[data-repo]')) { event.preventDefault(); event.target.click(); }
+});
+const official = name => name === 'unemu' || name.startsWith('unemu/');
+const segment = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/;
+function parseField(text, defaultPrivate) {
+  const entries = [], seen = new Set();
+  if (!text.trim()) return { entries, error: '' };
+  for (const item of text.split(',')) {
+    const value = item.trim();
+    if (!value) return { entries, error: 'Empty namespace between commas. Enter a path or remove the comma.' };
+    const match = value.match(/^(.*?)(?::(private|public))?$/);
+    const name = match[1].trim(), suffix = match[2];
+    if (name.endsWith('/')) return { entries, error: 'Remove the trailing slash: ' + name.replace(/\/+$/, '') + '.' };
+    if (name.startsWith('/') || name.includes('//')) return { entries, error: 'Empty segment between slashes. Use a path such as unemu/experimental.' };
+    if (!name || name.length > 255) return { entries, error: 'Enter a namespace path of 1–255 characters.' };
+    for (const part of name.split('/')) {
+      if (/[A-Z]/.test(part)) return { entries, error: 'Segment “' + part + '” must use lowercase letters.' };
+      if (!segment.test(part)) return { entries, error: 'Invalid segment “' + part + '”. Use lowercase letters and digits with . _ __ or - separators.' };
+    }
+    if (seen.has(name)) return { entries, error: 'Namespace “' + name + '” is listed twice.' };
+    seen.add(name);
+    if (official(name) && suffix === 'private') return { entries, error: 'Namespace “' + name + '” is always public: open content only under unemu/. Remove :private.' };
+    entries.push({ name, private: !official(name) && (suffix ? suffix === 'private' : defaultPrivate), suffix });
+  }
+  return { entries, error: '' };
+}
+function renderSettings() {
+  const result = parseField($('namespaces').value, $('defaultPrivate').checked);
+  $('nsError').textContent = result.error;
+  $('namespaces').setAttribute('aria-invalid', String(!!result.error));
+  $('saveBtn').disabled = !!result.error;
+  $('saveStatus').textContent = '';
+  $('privacyRows').innerHTML = result.error ? '<tr><td colspan="3">Correct the namespace field to preview privacy.</td></tr>' : result.entries.map(e => {
+    const why = official(e.name) ? 'Always public: open content only under unemu/.' : (e.private ? 'This scope is private, including when its parent is public.' : 'This scope is public. A more specific scope may be private.');
+    return '<tr><td><code>' + esc(e.name) + '</code></td><td><input type="checkbox" data-privacy="' + esc(e.name) + '" aria-label="Private: ' + esc(e.name) + '" aria-describedby="reason-' + result.entries.indexOf(e) + '"' + (e.private ? ' checked' : '') + (official(e.name) ? ' disabled' : '') + '></td><td id="reason-' + result.entries.indexOf(e) + '">' + why + '</td></tr>';
+  }).join('');
+  if (!result.error && !result.entries.length) $('privacyRows').innerHTML = '<tr><td colspan="3">Whole registry: ' + ($('defaultPrivate').checked ? 'private, with unemu/ always public.' : 'public.') + '</td></tr>';
+  $('scopeExample').textContent = result.entries.some(e => e.name === 'lab/private') ? 'lab/media/demo → lab (public); lab/private/media/demo → lab/private (private). Anonymous access must be refused before pushing user-supplied content.' : 'unemu/experimental/media/ibm-pc/freedos → unemu/experimental (public). unemu/experimental-other/media/demo stays under unemu.';
+  if (result.error) $('scopeExample').textContent = '';
+}
+function setExample(kind) {
+  const privateExample = kind === 'private';
+  $('editorHost').textContent = privateExample ? 'registry.example.org' : HOST;
+  $('editorTitle').textContent = 'Edit registry ' + $('editorHost').textContent;
+  $('namespaces').value = privateExample ? 'lab:public, lab/private:private' : 'unemu, unemu/experimental';
+  $('defaultPrivate').checked = false;
+  renderSettings();
+}
+$('namespaces').addEventListener('input', renderSettings);
+$('defaultPrivate').addEventListener('change', renderSettings);
+$('privacyRows').addEventListener('change', event => {
+  const name = event.target.dataset.privacy;
+  if (!name || official(name)) return;
+  const items = $('namespaces').value.split(',').map(v => v.trim());
+  $('namespaces').value = items.map(v => v.split(':')[0].trim() === name ? name + (event.target.checked ? ':private' : ':public') : v).join(', ');
+  renderSettings();
+});
+document.querySelectorAll('[data-example]').forEach(b => b.addEventListener('click', () => setExample(b.dataset.example)));
+$('settingsForm').addEventListener('submit', event => { event.preventDefault(); if (!$('saveBtn').disabled) $('saveStatus').textContent = 'Preview only — settings not saved.'; });
+$('resetBtn').addEventListener('click', () => setExample('official'));
+let themeIndex = 0;
+const themes = ['system', 'light', 'dark'];
+$('themeBtn').addEventListener('click', () => {
+  themeIndex = (themeIndex + 1) % themes.length;
+  if (themeIndex) document.documentElement.dataset.theme = themes[themeIndex]; else delete document.documentElement.dataset.theme;
+  $('themeBtn').textContent = 'Theme: ' + themes[themeIndex];
+});
+$('skinBtn').addEventListener('click', () => {
+  const modern = document.documentElement.dataset.skin !== 'modern';
+  document.documentElement.dataset.skin = modern ? 'modern' : 'classic';
+  $('skinBtn').textContent = 'Skin: ' + (modern ? 'modern' : 'classic');
+});
+renderWindow('now');
+renderWindow('next');
+renderSettings();
+</script>
+</body>
+</html>

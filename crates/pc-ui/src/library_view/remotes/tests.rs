@@ -398,9 +398,115 @@ fn the_tree_lists_registries_namespaces_locks_and_type_groups_and_opening_lists(
     assert_eq!(rig.view.remote.node, Some(unemu(Some(Group::Media))));
     let rows = screen.settled(&mut rig.view).rows();
     let names: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
-    assert_eq!(names, ["unemu/media/freedos (2 tags)", "unemu/media/keen4"]);
+    assert_eq!(names, ["media/freedos (2 tags)", "media/keen4"]);
     // The default registry listed already: selecting it sends nothing.
     assert!(rig.browsing().is_empty());
+}
+
+#[test]
+fn nested_namespaces_draw_siblings_relative_labels_and_full_references() {
+    let mut rig = Rig::new();
+    rig.listed();
+    let paths = [
+        "unemu/media/freedos",
+        "unemu/experimental/media/freedos-append",
+    ];
+    let registry = rig.registry(DEFAULT_REGISTRY);
+    registry.entry.namespaces =
+        image_registry::config::parse_namespaces("unemu, unemu/experimental", false).unwrap();
+    registry.repositories = paths
+        .iter()
+        .map(|path| {
+            repository(
+                path,
+                &["1.4-r1"],
+                vec![read(
+                    DEFAULT_REGISTRY,
+                    path,
+                    "1.4-r1",
+                    record(mt::MEDIA_SET, "FreeDOS"),
+                    LocalState::NotPulled { same_as: None },
+                )],
+            )
+        })
+        .collect();
+    rig.view.remote.open.insert(DEFAULT_REGISTRY.into());
+    let nested = Node {
+        host: DEFAULT_REGISTRY.into(),
+        namespace: Some(Some("unemu/experimental".into())),
+        group: Some(Group::Media),
+    };
+    rig.show(nested);
+    let tree = tree_lines(
+        rig.view.remote.model.as_ref().unwrap(),
+        &rig.view.remote.open,
+    );
+    let scopes: Vec<_> = tree
+        .iter()
+        .filter(|line| line.label.starts_with("unemu/"))
+        .map(|line| line.label.as_str())
+        .collect();
+    assert_eq!(scopes, ["unemu/", "unemu/experimental/"]);
+    let mut screen = Screen::new(true, false, WIDE);
+    let shown = screen.settled(&mut rig.view);
+    assert_eq!(
+        shown.text("unemu/").rect.left(),
+        shown.text("unemu/experimental/").rect.left()
+    );
+    assert_eq!(
+        shown
+            .rows()
+            .iter()
+            .map(|row| row[0].as_str())
+            .collect::<Vec<_>>(),
+        ["media/freedos-append"]
+    );
+    let at = shown.widget("media/freedos-append").rect.center();
+    screen.frame(&mut rig.view, vec![egui::Event::PointerMoved(at)]);
+    screen.time += 1.0;
+    let hovered = screen.settled(&mut rig.view);
+    let reference = "registry.unemu.dev/unemu/experimental/media/freedos-append:1.4-r1";
+    assert!(
+        hovered
+            .texts
+            .iter()
+            .any(|text| text.text.contains(reference)),
+        "{:?}",
+        hovered
+            .texts
+            .iter()
+            .map(|text| &text.text)
+            .collect::<Vec<_>>()
+    );
+    screen.click(&mut rig.view, "media/freedos-append");
+    let selected = screen.settled(&mut rig.view);
+    assert!(selected
+        .texts
+        .iter()
+        .any(|text| text.text.contains(reference)));
+    assert_eq!(
+        rig.view.remote.selected,
+        Some((DEFAULT_REGISTRY.into(), paths[1].into(), "1.4-r1".into()))
+    );
+    rig.show(unemu(Some(Group::Media)));
+    assert_eq!(
+        screen
+            .settled(&mut rig.view)
+            .rows()
+            .iter()
+            .map(|row| row[0].clone())
+            .collect::<Vec<_>>(),
+        ["media/freedos"]
+    );
+    rig.show(Node::registry(DEFAULT_REGISTRY));
+    let registry_rows = screen.settled(&mut rig.view).rows();
+    assert_eq!(
+        registry_rows
+            .iter()
+            .map(|row| row[0].as_str())
+            .collect::<Vec<_>>(),
+        [paths[1], paths[0]]
+    );
 }
 
 /// The list draws the model's rows in the mock-up's columns: the name with
@@ -429,9 +535,9 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
             .unwrap_or_else(|| panic!("{name} not in {rows:?}"))
     };
     assert_eq!(
-        row("unemu/open-at (3 tags)"),
+        row("open-at (3 tags)"),
         &[
-            "unemu/open-at (3 tags)",
+            "open-at (3 tags)",
             DEFAULT_REGISTRY,
             "Open AT 286",
             "1.2.0",
@@ -441,21 +547,18 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
             "In library · 1 of 3 tags",
         ]
     );
+    assert_eq!(row("open-at-games")[7], "Newer available · you have 1.0.0");
+    assert_eq!(row("clash")[7], "⚠ Local tag names another image");
+    assert_eq!(row("media/freedos (2 tags)")[4], "Installation media");
+    assert_eq!(row("media/freedos (2 tags)")[3], "1.4");
+    assert_eq!(row("media/keen4")[5], "user-supplied");
     assert_eq!(
-        row("unemu/open-at-games")[7],
-        "Newer available · you have 1.0.0"
-    );
-    assert_eq!(row("unemu/clash")[7], "⚠ Local tag names another image");
-    assert_eq!(row("unemu/media/freedos (2 tags)")[4], "Installation media");
-    assert_eq!(row("unemu/media/freedos (2 tags)")[3], "1.4");
-    assert_eq!(row("unemu/media/keen4")[5], "user-supplied");
-    assert_eq!(
-        row("unemu/media/keen4")[7],
+        row("media/keen4")[7],
         "Not pulled · same image as keen4:1.4"
     );
-    assert_eq!(row("unemu/firmware/future-bios")[4], "Firmware package");
+    assert_eq!(row("firmware/future-bios")[4], "Firmware package");
     assert_eq!(
-        row("unemu/firmware/future-bios")[7],
+        row("firmware/future-bios")[7],
         "Needs unemupc 99.0.0 or newer"
     );
     // Sorted by type, as the mock-up opens: machine images first.
@@ -463,12 +566,12 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
     assert_eq!(
         names,
         [
-            "unemu/clash",
-            "unemu/open-at (3 tags)",
-            "unemu/open-at-games",
-            "unemu/media/freedos (2 tags)",
-            "unemu/media/keen4",
-            "unemu/firmware/future-bios",
+            "clash",
+            "open-at (3 tags)",
+            "open-at-games",
+            "media/freedos (2 tags)",
+            "media/keen4",
+            "firmware/future-bios",
         ]
     );
     // Colours: the states in theirs, the muted row's name muted.
@@ -482,13 +585,13 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
         visuals.warn_fg_color
     );
     assert_eq!(
-        shown.text("unemu/firmware/future-bios").colour,
+        shown.text("firmware/future-bios").colour,
         visuals.weak_text_color()
     );
-    assert_eq!(shown.text("unemu/clash").colour, visuals.text_color());
+    assert_eq!(shown.text("clash").colour, visuals.text_color());
 
     // Expanding reads the tags not read yet, in one request.
-    screen.click(&mut rig.view, "Expand unemu/open-at (3 tags)");
+    screen.click(&mut rig.view, "Expand open-at (3 tags)");
     let requests = rig.browsing();
     assert_eq!(requests.len(), 1);
     match &requests[0] {
@@ -503,7 +606,7 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
     let rows = screen.settled(&mut rig.view).rows();
     let at = rows
         .iter()
-        .position(|r| r[0] == "unemu/open-at (3 tags)")
+        .position(|r| r[0] == "open-at (3 tags)")
         .unwrap();
     let children: Vec<(&str, &str)> = rows[at + 1..at + 4]
         .iter()
@@ -519,7 +622,7 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
     );
     assert!(screen
         .settled(&mut rig.view)
-        .has_widget("Collapse unemu/open-at (3 tags)"));
+        .has_widget("Collapse open-at (3 tags)"));
 }
 
 /// A newer release, told from the title records, reads as Newer available
@@ -545,7 +648,7 @@ fn a_newer_release_reads_newer_available_with_the_local_version() {
     let rows = shown.rows();
     let row = rows
         .iter()
-        .find(|r| r[0] == "unemu/media/freedos (2 tags)")
+        .find(|r| r[0] == "media/freedos (2 tags)")
         .unwrap();
     assert_eq!(row[7], "Newer available · you have 1.3");
     // In the warning colour Newer available has, as the first part of the cell.
@@ -864,7 +967,7 @@ fn arrow_keys_move_between_rows_and_enter_expands() {
     rig.show(unemu(Some(Group::Machines)));
     let mut screen = Screen::new(true, false, WIDE);
     // The rows sort by type, then name: clash, open-at, open-at-games.
-    screen.click(&mut rig.view, "unemu/clash");
+    screen.click(&mut rig.view, "clash");
     assert_eq!(
         rig.view.remote.selected,
         Some((
@@ -937,14 +1040,7 @@ fn get_templates_selects_the_unemu_machine_images_node() {
     assert_ne!(shown.text("Machines (0)").colour, selection);
     assert!(shown.widget("unemu/ on registry.unemu.dev (6)").rect.top() < node.top());
     let names: Vec<String> = shown.rows().into_iter().map(|r| r[0].clone()).collect();
-    assert_eq!(
-        names,
-        [
-            "unemu/clash",
-            "unemu/open-at (3 tags)",
-            "unemu/open-at-games"
-        ]
-    );
+    assert_eq!(names, ["clash", "open-at (3 tags)", "open-at-games"]);
     // A Library collection takes the list back.
     screen.click(&mut rig.view, "Machines (0)");
     assert_eq!(rig.view.remote.node, None);
@@ -962,7 +1058,7 @@ fn a_remote_node_keeps_the_library_selection_apart() {
     assert!(shown.has(
         "Select a tag for its details and Pull…. Ctrl (⌘ on macOS) adds a tag to the selection; Shift selects a range."
     ));
-    screen.click(&mut rig.view, "unemu/clash");
+    screen.click(&mut rig.view, "clash");
     assert!(rig.view.selected.is_none() && rig.view.machine.is_none());
     let shown = screen.settled(&mut rig.view);
     assert!(shown.has("Annotations, from the manifest") && shown.has("In your library"));
@@ -1335,7 +1431,7 @@ fn unread_expanded_repositories_collapse_when_their_reads_cannot_finish() {
         rig.listed();
         rig.show(unemu(None));
         let mut screen = Screen::new(true, false, WIDE);
-        screen.click(&mut rig.view, "Expand unemu/open-at (3 tags)");
+        screen.click(&mut rig.view, "Expand open-at (3 tags)");
         assert!(rig.view.remote.expanded.contains(&key), "{what}");
         stop(&mut rig);
         assert!(!rig.view.remote.expanded.contains(&key), "{what}");
@@ -1445,18 +1541,15 @@ fn the_list_and_the_tree_are_derived_once_per_change() {
     rig.show(unemu(Some(Group::Machines)));
     let mut screen = Screen::new(true, false, WIDE);
     let first = |shown: &Shown| shown.rows()[0][0].clone();
-    assert_eq!(first(&screen.settled(&mut rig.view)), "unemu/clash");
+    assert_eq!(first(&screen.settled(&mut rig.view)), "clash");
     // A change the model does not count keeps the sorted order: the row
     // renamed past the others stays first.
     rig.view.remote.model.as_mut().unwrap().registries[0].repositories[2].name =
         "unemu/zz-clash".into();
-    assert_eq!(first(&screen.settled(&mut rig.view)), "unemu/zz-clash");
+    assert_eq!(first(&screen.settled(&mut rig.view)), "zz-clash");
     // A counted change sorts again.
     rig.model();
-    assert_eq!(
-        first(&screen.settled(&mut rig.view)),
-        "unemu/open-at (3 tags)"
-    );
+    assert_eq!(first(&screen.settled(&mut rig.view)), "open-at (3 tags)");
 }
 
 /// Every tree line has an accessible name that says what its marks show:
@@ -1507,8 +1600,8 @@ fn a_collapsed_repository_shows_the_selection_of_its_tag() {
         .selection
         .stroke
         .color;
-    assert_eq!(shown.text("unemu/open-at (3 tags)").colour, selection);
-    assert_ne!(shown.text("unemu/clash").colour, selection);
+    assert_eq!(shown.text("open-at (3 tags)").colour, selection);
+    assert_ne!(shown.text("clash").colour, selection);
 }
 
 /// Click the widget labelled `label` with `modifiers` held.
@@ -1754,11 +1847,11 @@ fn ctrl_and_shift_select_several_tags_for_one_pull() {
     rig.listed();
     rig.show(unemu(None));
     let mut screen = Screen::new(true, false, WIDE);
-    screen.click(&mut rig.view, "unemu/media/freedos");
+    screen.click(&mut rig.view, "media/freedos");
     click_with(
         &mut screen,
         &mut rig.view,
-        "unemu/firmware/future-bios",
+        "firmware/future-bios",
         egui::Modifiers::SHIFT,
     );
     let ids = |rig: &Rig| -> Vec<String> {
@@ -1786,7 +1879,7 @@ fn ctrl_and_shift_select_several_tags_for_one_pull() {
     click_with(
         &mut screen,
         &mut rig.view,
-        "unemu/media/keen4",
+        "media/keen4",
         egui::Modifiers::COMMAND,
     );
     assert_eq!(
@@ -1796,7 +1889,7 @@ fn ctrl_and_shift_select_several_tags_for_one_pull() {
     click_with(
         &mut screen,
         &mut rig.view,
-        "unemu/open-at-games",
+        "open-at-games",
         egui::Modifiers::COMMAND,
     );
     let shown = screen.settled(&mut rig.view);
@@ -1809,7 +1902,7 @@ fn ctrl_and_shift_select_several_tags_for_one_pull() {
     assert_eq!(skipped, [None, Some("needs unemupc 99.0.0 or newer"), None]);
     // A plain click selects one tag again.
     rig.view.remote_pull = None;
-    screen.click(&mut rig.view, "unemu/clash");
+    screen.click(&mut rig.view, "clash");
     assert_eq!(ids(&rig), ["unemu/clash:1.0.0"]);
 }
 
@@ -1829,7 +1922,7 @@ fn pull_and_insert_leaves_the_first_disk_pending_in_a_stopped_machine() {
     rig.view.machines = Arc::new(vec![row("games", "Games machine", "games", &[])]);
     rig.view.active_machine = Some(("games".into(), "Games machine".into()));
     let mut screen = Screen::new(true, false, WIDE);
-    screen.click(&mut rig.view, "unemu/media/freedos");
+    screen.click(&mut rig.view, "media/freedos");
     screen.click(&mut rig.view, "Pull and insert…");
     assert!(rig.view.remote_pull.is_none(), "the machine runs");
     rig.view.active_machine = None;
@@ -1892,7 +1985,7 @@ fn pull_and_create_machine_opens_new_machine_from_image_after_the_pull() {
     rig.listed();
     rig.show(unemu(None));
     let mut screen = Screen::new(true, false, WIDE);
-    screen.click(&mut rig.view, "unemu/open-at-games");
+    screen.click(&mut rig.view, "open-at-games");
     screen.click(&mut rig.view, "Pull and create machine…");
     let dialog = rig.view.remote_pull.as_mut().expect("the dialog opens");
     let requests = dialog.start();
@@ -2274,8 +2367,8 @@ fn another_familys_image_is_muted_and_cannot_be_pulled() {
     let rows = shown.rows();
     assert_eq!(rows[0].last().map(String::as_str), Some(reason));
     let muted = ui_kit::skin::skin_visuals(true, false).weak_text_color();
-    assert_eq!(shown.text("unemu/c64").colour, muted);
-    screen.click(&mut rig.view, "unemu/c64");
+    assert_eq!(shown.text("c64").colour, muted);
+    screen.click(&mut rig.view, "c64");
     let shown = screen.settled(&mut rig.view);
     assert!(shown.shows(&format!("{reason}.")));
     assert!(!rig.view.can_pull_remote());
@@ -2294,8 +2387,8 @@ fn enter_on_a_tag_row_opens_pull() {
     rig.listed();
     rig.show(unemu(None));
     let mut screen = Screen::new(true, false, WIDE);
-    screen.click(&mut rig.view, "unemu/clash");
-    screen.click(&mut rig.view, "unemu/open-at-games");
+    screen.click(&mut rig.view, "clash");
+    screen.click(&mut rig.view, "open-at-games");
     assert!(rig.view.remote_pull.is_none());
     screen.key(&mut rig.view, egui::Key::Enter);
     let dialog = rig.view.remote_pull.as_ref().expect("Enter opens Pull…");
@@ -2317,7 +2410,7 @@ fn another_node_drops_the_selection() {
     rig.view
         .select_remote(unemu(Some(Group::Machines)), &mut file);
     let mut screen = Screen::new(true, false, WIDE);
-    screen.click(&mut rig.view, "unemu/open-at-games");
+    screen.click(&mut rig.view, "open-at-games");
     assert!(rig.view.can_pull_remote());
     rig.view
         .select_remote(unemu(Some(Group::Firmware)), &mut file);
@@ -2328,7 +2421,7 @@ fn another_node_drops_the_selection() {
         "Select a tag for its details and Pull…. Ctrl (⌘ on macOS) adds a tag to the selection; Shift selects a range."
     ));
     // Showing the same node again keeps it.
-    screen.click(&mut rig.view, "unemu/firmware/future-bios");
+    screen.click(&mut rig.view, "firmware/future-bios");
     rig.view
         .select_remote(unemu(Some(Group::Firmware)), &mut file);
     assert_eq!(rig.view.remote.selection().len(), 1);
@@ -2367,7 +2460,7 @@ fn only_a_name_right_under_unemu_is_a_template() {
     let rows = screen.settled(&mut rig.view).rows();
     let staged = rows
         .iter()
-        .find(|r| r[0] == "unemu/staging/open-at")
+        .find(|r| r[0] == "staging/open-at")
         .expect("listed under the node");
     assert_eq!(staged[4], "Machine image");
 }
@@ -2418,7 +2511,7 @@ fn pull_and_insert_says_what_it_replaces() {
     });
     rig.view.machines = Arc::new(vec![games]);
     let mut screen = Screen::new(true, false, WIDE);
-    screen.click(&mut rig.view, "unemu/media/freedos");
+    screen.click(&mut rig.view, "media/freedos");
     screen.click(&mut rig.view, "Pull and insert…");
     let dialog = rig
         .view

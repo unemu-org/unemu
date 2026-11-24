@@ -55,6 +55,7 @@ const TEMPLATES: &str = "get-templates.html";
 const PICKER: &str = "media-picker.html";
 const FIRMWARE_SETTINGS: &str = "firmware-settings.html";
 const REMOTES: &str = "remotes.html";
+const NESTED_NAMESPACES: &str = "remotes-nested-namespaces.html";
 const REMOTES_PUSH: &str = "remotes-push.html";
 const PLAYER: &str = "player.html";
 const ABOUT: &str = "about.html";
@@ -280,6 +281,17 @@ pub const INVENTORY: &[Entry] = &[
     glyph(REMOTES, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
     glyph(REMOTES, '×', "close", Place::Text(CLOSE)),
     glyph(REMOTES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
+    svg(NESTED_NAMESPACES, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "library title strip")),
+    svg(NESTED_NAMESPACES, "M8 1.5l6 3-6 3-6-3z", "an image", Place::Painted(Icon::Image, "image rows and groups")),
+    svg(NESTED_NAMESPACES, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "media rows and groups")),
+    svg(NESTED_NAMESPACES, "M6 1v2.5M10 1v2.5", "a firmware package", Place::Painted(Icon::Firmware, "firmware rows and groups")),
+    svg(NESTED_NAMESPACES, "M3 1.5h7l3 3v10H3z", "a machine file", Place::Painted(Icon::MachineFile, "machine file groups")),
+    svg(NESTED_NAMESPACES, "M5 4.5h1M5 11.5h1", "a registry", Place::Painted(Icon::Registry, "Remotes registry nodes")),
+    svg(NESTED_NAMESPACES, "M1.5 3.5h5l1.5 1.5h6.5v8.5h-13z", "a namespace", Place::Painted(Icon::Namespace, "Remotes namespace nodes")),
+    svg(NESTED_NAMESPACES, "class=\"ico lock\"", "a private scope before login", Place::Painted(Icon::Lock, "Remotes private namespace nodes")),
+    glyph(NESTED_NAMESPACES, '−', "an expanded tree node", Place::Text("Remotes tree expand boxes")),
+    glyph(NESTED_NAMESPACES, '×', "close", Place::Text(CLOSE)),
+    glyph(NESTED_NAMESPACES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
     // remotes-push.html: the Remotes mock-up with pushing from the GUI.
     svg(REMOTES_PUSH, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Painted(Icon::App, "classic title strip")),
     svg(REMOTES_PUSH, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start")),
@@ -395,7 +407,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 17, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 18, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {
@@ -469,6 +481,14 @@ mod tests {
             assert!(!entry.meaning.is_empty() && !where_or_why.is_empty());
         }
         assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    #[test]
+    fn nested_namespace_mockup_reuses_the_scope_icons() {
+        for icon in [Icon::Registry, Icon::Namespace, Icon::Lock] {
+            assert!(INVENTORY.iter().any(|entry| entry.mockup == "remotes-nested-namespaces.html"
+                && matches!(entry.place, Place::Painted(found, _) if found as usize == icon as usize)));
+        }
     }
 
     /// Every icon the module paints stands for a mock-up icon, and every

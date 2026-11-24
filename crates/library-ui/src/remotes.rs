@@ -102,8 +102,8 @@ impl Group {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {
     pub host: String,
-    /// `None` for the registry's own node; else the namespace's first path
-    /// component, `None` inside for repositories of a single component.
+    /// `None` for the registry's own node; else the configured namespace path
+    /// (or a catalog first component), `None` inside for top-level repositories.
     pub namespace: Option<Option<String>>,
     pub group: Option<Group>,
 }
@@ -118,9 +118,14 @@ impl Node {
     }
 
     /// The repository is listed under this node.
-    fn holds(&self, repository: &RepositoryRow) -> bool {
+    fn holds(&self, view: &RegistryView, repository: &RepositoryRow) -> bool {
         let namespace = match &self.namespace {
-            Some(namespace) => first_component(&repository.name) == namespace.as_deref(),
+            Some(namespace) if view.entry.namespaces.is_empty() => {
+                first_component(&repository.name) == namespace.as_deref()
+            }
+            Some(namespace) => {
+                matches!(view.entry.scope(&repository.name), image_registry::config::Scope::Namespace { name, .. } if Some(name.as_str()) == namespace.as_deref())
+            }
             None => true,
         };
         namespace && (self.group.is_none() || group_of(repository) == self.group)
@@ -673,6 +678,7 @@ type Part = (String, Tone);
 
 /// A list row's cells and what its name cell draws before the name.
 struct RowCells {
+    reference: String,
     parts: [Vec<Part>; 8],
     /// The expand box of a repository of several tags, open or not.
     twisty: Option<bool>,
@@ -841,7 +847,7 @@ fn draw_row(
                 answer.clicked |= response.clicked();
                 answer.double |= response.double_clicked();
                 if !text.is_empty() {
-                    response.on_hover_text(text);
+                    response.on_hover_text(format!("{}\n{text}", row.reference));
                 }
             }
         });
@@ -938,9 +944,10 @@ fn repository_row(
     repository: &RepositoryRow,
     open: bool,
     facts: &PlatformFacts,
+    namespace: Option<&str>,
 ) -> RowCells {
     let multi = repository.tags.len() > 1;
-    let mut name = vec![(repository.name.clone(), Tone::Plain)];
+    let mut name = vec![(repository.label(namespace).into(), Tone::Plain)];
     if multi {
         name.push((format!(" ({} tags)", repository.tags.len()), Tone::Muted));
     }
@@ -948,6 +955,7 @@ fn repository_row(
     parts[0] = name;
     parts[1] = vec![(host.into(), Tone::Plain)];
     let mut row = RowCells {
+        reference: repository.reference(host, repository.representative.as_deref()),
         parts,
         twisty: multi.then_some(open),
         icon: None,
@@ -1019,6 +1027,7 @@ fn tag_row(host: &str, repository: &RepositoryRow, tag: &str, facts: &PlatformFa
     parts[0] = vec![(format!(":{tag}"), Tone::Code)];
     parts[1] = vec![(host.into(), Tone::Plain)];
     let mut row = RowCells {
+        reference: repository.reference(host, Some(tag)),
         parts,
         twisty: None,
         icon: None,
@@ -1131,7 +1140,7 @@ fn lines(
     descending: bool,
 ) -> Vec<Line> {
     let mut repositories: Vec<usize> = (0..view.repositories.len())
-        .filter(|&i| node.holds(&view.repositories[i]))
+        .filter(|&i| node.holds(view, &view.repositories[i]))
         .collect();
     repositories.sort_by_cached_key(|&i| sort_key(&view.repositories[i], sort));
     if descending {
@@ -1730,8 +1739,15 @@ impl RemotesView {
                                                     } else {
                                                         picked.is_some()
                                                     };
-                                                let cells =
-                                                    repository_row(&host, repository, open, facts);
+                                                let cells = repository_row(
+                                                    &host,
+                                                    repository,
+                                                    open,
+                                                    facts,
+                                                    node.namespace
+                                                        .as_ref()
+                                                        .and_then(|n| n.as_deref()),
+                                                );
                                                 (
                                                     cells,
                                                     repository.representative.clone(),
@@ -1794,7 +1810,7 @@ impl RemotesView {
                     let count = registry
                         .repositories
                         .iter()
-                        .filter(|r| node.holds(r))
+                        .filter(|r| node.holds(registry, r))
                         .count();
                     ui.horizontal(|ui| {
                         let more = registry.next.is_some();

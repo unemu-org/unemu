@@ -99,6 +99,94 @@ pub struct Editor {
     pub error: Option<String>,
 }
 
+/// Effective privacy shown below the namespace field. The field owns edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamespacePrivacy {
+    pub name: String,
+    pub private: bool,
+    pub reason: &'static str,
+}
+
+impl Editor {
+    fn parse_namespaces(&self) -> Result<Vec<config::Namespace>, String> {
+        if self.namespaces.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for item in self.namespaces.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                return Err(
+                    "Empty namespace between commas. Enter a path or remove the comma.".into(),
+                );
+            }
+            let (name, suffix) = item
+                .rsplit_once(':')
+                .map_or((item, None), |(name, suffix)| (name.trim(), Some(suffix)));
+            if name.ends_with('/') {
+                return Err(format!(
+                    "Remove the trailing slash: {}.",
+                    name.trim_end_matches('/')
+                ));
+            }
+            if name.starts_with('/') || name.contains("//") {
+                return Err(
+                    "Empty segment between slashes. Use a path such as unemu/experimental.".into(),
+                );
+            }
+            if name.is_empty() || name.len() > 255 {
+                return Err("Enter a namespace path of 1–255 characters.".into());
+            }
+            for part in name.split('/') {
+                if part.bytes().any(|b| b.is_ascii_uppercase()) {
+                    return Err(format!("Segment “{part}” must use lowercase letters."));
+                }
+                if config::parse_namespace(part, false).is_err() {
+                    return Err(format!("Invalid segment “{part}”. Use lowercase letters and digits with . _ __ or - separators."));
+                }
+            }
+            if !seen.insert(name) {
+                return Err(format!("Namespace “{name}” is listed twice."));
+            }
+            if image_registry::reference::is_official_namespace(name) && suffix == Some("private") {
+                return Err(format!("Namespace “{name}” is always public: open content only under unemu/. Remove :private."));
+            }
+        }
+        config::parse_namespaces(&self.namespaces, self.private).map_err(|error| plain(&error))
+    }
+
+    /// Live validation, independent of the background save job.
+    pub fn namespace_error(&self) -> Option<String> {
+        self.parse_namespaces().err()
+    }
+
+    pub fn can_save(&self) -> bool {
+        self.namespace_error().is_none()
+    }
+
+    /// Read-only preview; privacy is edited through the field's suffixes.
+    pub fn privacy_preview(&self) -> Vec<NamespacePrivacy> {
+        self.parse_namespaces()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|namespace| {
+                let reason = if image_registry::reference::is_official_namespace(&namespace.name) {
+                    "Always public: open content only under unemu/"
+                } else if namespace.private {
+                    "This scope is private, including when its parent is public."
+                } else {
+                    "This scope is public. A more specific scope may be private."
+                };
+                NamespacePrivacy {
+                    name: namespace.name,
+                    private: namespace.private,
+                    reason,
+                }
+            })
+            .collect()
+    }
+}
+
 /// The Log in dialog.
 pub struct LoginDialog {
     pub host: String,
@@ -586,8 +674,7 @@ impl RegistriesPage {
             }
         })
         .and_then(|host| {
-            let namespaces = config::parse_namespaces(&editor.namespaces, private)
-                .map_err(|error| format!("Namespaces: {}.", plain(&error)))?;
+            let namespaces = editor.parse_namespaces()?;
             Ok((host, namespaces))
         });
         let (host, namespaces) = match host {
@@ -1884,13 +1971,47 @@ mod tests {
     }
 
     #[test]
+    fn nested_namespaces_editor_validates_live_and_previews_privacy() {
+        let mut f = fixture("rom_dirs = []\n");
+        f.page.open_add();
+        let editor = f.page.editor.as_mut().unwrap();
+        for (text, error) in [
+            ("unemu//experimental", "Empty segment between slashes. Use a path such as unemu/experimental."),
+            ("unemu/Experimental", "Segment “Experimental” must use lowercase letters."),
+            ("unemu/experimental/", "Remove the trailing slash: unemu/experimental."),
+            ("lab/private:public, lab/private:private", "Namespace “lab/private” is listed twice."),
+            ("unemu/experimental:private", "Namespace “unemu/experimental” is always public: open content only under unemu/. Remove :private."),
+        ] {
+            editor.namespaces = text.into();
+            assert_eq!(editor.namespace_error().as_deref(), Some(error));
+            assert!(!editor.can_save());
+            assert!(editor.privacy_preview().is_empty());
+        }
+        editor.private = true;
+        editor.namespaces = "unemu, unemu/experimental, lab:public, lab/private:private".into();
+        assert!(editor.can_save());
+        let preview = editor.privacy_preview();
+        assert_eq!(preview.len(), 4);
+        for row in &preview[..2] {
+            assert!(!row.private);
+            assert_eq!(row.reason, "Always public: open content only under unemu/");
+        }
+        assert!(!preview[2].private);
+        assert!(preview[3].private);
+        assert!(preview[3].reason.contains("parent is public"));
+        editor.namespaces = "unemu/experimental/".into();
+        f.page.submit_editor();
+        assert!(f.page.editor.as_ref().unwrap().error.is_some());
+    }
+
+    #[test]
     fn the_add_dialog_lists_namespaces_and_edit_reads_them_back() {
         let mut f = fixture("rom_dirs = [\"/roms\"]\n");
         f.page.open_add();
         let editor = f.page.editor.as_mut().unwrap();
         assert!(editor.namespaces.is_empty(), "empty = the whole registry");
         editor.host = DEFAULT_REGISTRY.into();
-        editor.namespaces = "unemu, private/".into();
+        editor.namespaces = "unemu, private".into();
         f.page.submit_editor();
         f.page.wait();
         assert_eq!(
@@ -1928,8 +2049,8 @@ mod tests {
         assert_eq!(f.page.table().len(), 4);
 
         for (typed, problem) in [
-            ("unemu:private", "never private"),
-            ("private/games", "Namespaces:"),
+            ("unemu:private", "always public"),
+            ("private//games", "Empty segment"),
             ("a, a", "listed twice"),
         ] {
             f.page.open_edit();

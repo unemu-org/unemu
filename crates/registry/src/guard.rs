@@ -1250,6 +1250,50 @@ mod tests {
     }
 
     #[test]
+    fn nested_namespaces_guard_preserves_official_and_private_rules() {
+        let mixed = [entry(Some("user-supplied"), mt::FIRMWARE, b"rom")];
+        let open = [entry(Some("open"), mt::CONFIG, b"c")];
+        let registry = RegistryEntry {
+            namespaces: vec![
+                crate::config::Namespace {
+                    name: "unemu/experimental".into(),
+                    private: false,
+                },
+                crate::config::Namespace {
+                    name: "lab".into(),
+                    private: false,
+                },
+                crate::config::Namespace {
+                    name: "lab/private".into(),
+                    private: true,
+                },
+            ],
+            ..RegistryEntry::builtin("registry.unemu.dev")
+        };
+        assert_eq!(
+            check(Some(&registry), &target("lab/private/rom:1"), &mixed),
+            Ok(())
+        );
+        assert!(matches!(
+            check(Some(&registry), &target("lab/public/rom:1"), &mixed),
+            Err(Refusal::NamespaceNotPrivate { .. })
+        ));
+        assert!(matches!(
+            check(Some(&registry), &target("unemu/experimental/rom:1"), &mixed),
+            Err(Refusal::OfficialNamespaceNeedsOpen { .. })
+        ));
+        assert_eq!(
+            check(
+                Some(&registry),
+                &target("unemu/experimental/image:1"),
+                &open
+            ),
+            Ok(())
+        );
+        assert!(needs_private_probe(&mixed));
+    }
+
+    #[test]
     fn user_supplied_blobs_go_only_into_a_namespace_marked_private() {
         let mixed = [
             entry(Some("open"), mt::CONFIG, b"c"),
@@ -1291,11 +1335,7 @@ mod tests {
                 "registry.unemu.dev/owner/ is not a configured namespace on this registry"
             );
             assert!(matches!(
-                check(
-                    Some(&entry),
-                    &target("registry.unemu.dev/private:1"),
-                    closure
-                ),
+                check(Some(&entry), &target("registry.unemu.dev/solo:1"), closure),
                 Err(Refusal::UnlistedNamespace {
                     namespace: None,
                     ..
@@ -1303,7 +1343,7 @@ mod tests {
             ));
         }
         // Open content still goes to the listed namespaces.
-        for reference in ["lab:1", "private/lab:1"] {
+        for reference in ["lab:1", "private/lab:1", "registry.unemu.dev/private:1"] {
             assert_eq!(check(Some(&entry), &target(reference), &open), Ok(()));
         }
     }

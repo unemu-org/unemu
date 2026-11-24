@@ -853,7 +853,7 @@ directory named after the project's former name is copied there once):
 [[registries]]
 host = "registry.unemu.dev"
 user = "NAME"       # Keychain account; never a password here
-# Privacy per namespace (the first path component of a repository):
+# Privacy per namespace (one or more repository path segments):
 namespaces = [{ name = "unemu", private = false }, { name = "private", private = true }]
 
 [[registries]]
@@ -864,8 +864,11 @@ private = true      # the whole registry; may receive user-supplied blobs outsid
 An entry without `namespaces` keeps one `private` flag for every repository,
 as before. An entry with `namespaces` marks each namespace public or private,
 must not also say `private = true`, and takes pushes only into the namespaces
-it lists. `unemu/` is the official namespace on every host and never private:
-an entry that marks it private is refused when preferences are read. The
+it lists. The longest configured prefix at a segment boundary owns each
+repository, including a repository equal to the namespace. Overlapping names
+such as `unemu` and `unemu/experimental` are valid; duplicate names are refused.
+`unemu` and every `unemu/` descendant are always public on every host:
+an entry that marks one private is refused when preferences are read. The
 array-of-tables spelling (`[[registries.namespaces]]`) is the same document,
 and writers keep whichever keys they did not change.
 
@@ -881,9 +884,12 @@ To serve a public `unemu/` and a private `private/` from `registry.unemu.dev`:
   namespace.
 - Desktop shell: Tools › Preferences… › Registries, Add… (or Edit… on the
   built-in row), type `unemu, private` into Namespaces and keep Private
-  registry checked. Listed names without a suffix take the checkbox; `unemu`
-  always stays public, and `NAME:public` or `NAME:private` sets one namespace
-  on its own.
+  registry checked. Listed paths without a suffix take the checkbox; `unemu`
+  and its descendants always stay public, and `NAME:public` or `NAME:private`
+  sets one scope on its own. Live validation rejects invalid path segments,
+  duplicate names and trailing slashes; file loading silently trims one
+  trailing slash for compatibility. The read-only privacy preview shows each
+  scope's effective mark; edit suffixes in the field to change it.
 
 When the public namespace moves to another host, keep the `private` entry and
 give the new host an entry that lists `unemu` only.

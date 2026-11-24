@@ -1052,9 +1052,9 @@ after its name: the registry host its pull recorded (`unemu.pull.registry`),
 with neither record, whose source is unknown and never guessed. A Remotes group follows Library (approved remotes mock-up,
 revision 2): one node per registry of Preferences › Registries, the default
 registry first and `registry.unemu.dev` always; under an open registry its
-namespaces, a private one locked until a login lists it; under an open
-namespace one group per artifact type with repositories (Machine images,
-Installation media, Firmware). Nothing contacts a registry until its node is
+namespaces as sibling nodes, a private one locked until a login lists it;
+under an open namespace one group per artifact type with repositories
+(Machine images, Installation media, Firmware). Nothing contacts a registry until its node is
 expanded or selected, and every request runs on the library worker (§5.1).
 A node's list has the mock-up's columns (Name, Source, Title, Latest, Type,
 Licence, Size, Local state); a repository of several tags expands into them,
@@ -1410,8 +1410,8 @@ publishing proprietary bytes by accident:
   target reference is given; push of a short tag goes to the default host.
 - The registries list in preferences holds entries of a host, an optional
   login user and its privacy, never a secret. Privacy is set for the whole
-  registry with a `private` flag, or per namespace (the first path component
-  of a repository) with a `namespaces` list, each namespace public or private;
+  registry with a `private` flag, or per namespace (one or more repository
+  path segments) with a `namespaces` list, each namespace public or private;
   an entry with namespaces carries no `private = true` of its own. One host can
   so serve a public `unemu/` and a private `private/`:
 
@@ -1422,18 +1422,19 @@ publishing proprietary bytes by accident:
   namespaces = [{ name = "unemu", private = false }, { name = "private", private = true }]
   ```
 
-  `unemu/` is never private: an entry that marks it private is refused when
-  preferences are read. The default registry is known without an entry and is
-  public until marked private. When the public namespace moves to another
+  `unemu` and every `unemu/` descendant are never private: an entry that
+  marks one private is refused when preferences are read. The default registry
+  is known without an entry and is public until marked private. When the public namespace moves to another
   host, `private/` keeps its entry and the new host's entry lists `unemu/`
   only. The command line sets privacy with `image registry set`, the desktop
   shell with Preferences › Registries; both write the same keys.
 - Push refuses a registry that is neither listed nor the default, and, on an
   entry that lists namespaces, any repository outside them, whatever the image
   holds ("X/ is not a configured namespace on this registry"). A repository is
-  in a namespace only below it: `private/games` is in `private/`, a repository
-  named `private` is not. A blob's effective class is the most restrictive one
-  recorded for its digest in any local manifest (§2). An image with any
+  owned by the longest configured namespace equal to its name or followed
+  by `/`: `lab/private/games` belongs to `lab/private` rather than `lab` when
+  both are configured. Overlapping names are valid; duplicates are refused.
+  A blob's effective class is the most restrictive one recorded for its digest in any local manifest (§2). An image with any
   user-supplied blob (the default classification) goes only to a namespace
   marked private, or to an entry without namespaces marked private as a whole,
   and never into the official `unemu/` namespace on any host; pushes into

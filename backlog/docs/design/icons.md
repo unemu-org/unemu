@@ -81,6 +81,7 @@ icons are the project's own mock-up artwork, under the project licence.
 | firmware-settings | ⓘ ⚠ ✓ ● | the Settings… banner, the Firmware tab's CMOS line (⚠ another layout, ✓ the same) and changed tab labels |
 | remotes | application monitor, Start, machine, image, media set, firmware, machine file | the same places as in the machines mock-up; − ▲ ▼ ⌘ as in the library lists and menus |
 | remotes | registry, namespace, lock | the Remotes tree: each registry, each namespace, and the lock after a private namespace until a login lists it; the registry icon also on the toolbar's Registries… |
+| [remotes-nested-namespaces](mockups/remotes-nested-namespaces.html) | registry, namespace, machine, image, media set, firmware, machine file | reuses the Remotes icons; compares current and proposed namespace scopes and registry settings |
 | remotes | Refresh | the toolbar's Refresh, which lists the shown registry again |
 | remotes | Pull | the toolbar's Pull…, while the library shows Remotes: the tags selected there |
 | library, remotes-push | Push | the toolbar's Push…, beside Pull…: Push to… of the selected library items, Push here… while a Remotes node is shown |
