@@ -32,9 +32,8 @@
 //! answers on a later frame. Stop sets a flag the worker checks before every
 //! request after a job's first, so a listing stops at its next read; answers
 //! of a stopped job change nothing. The worker answers one request at a time,
-//! so the window calls [`Remotes::stop_all`] before it starts a machine. What
-//! is read stays in this session's memory and is never written to disk;
-//! Refresh lists the registry again and replaces it.
+//! so the window calls [`Remotes::stop_all`] before it starts a machine.
+//! Refresh lists the registry again and replaces the rows.
 //!
 //! States, as the mock-up names them: listing; listed, or empty when nothing
 //! is published; stopped; unreachable; unreachable after a listing, whose rows
@@ -75,8 +74,24 @@
 //! a set's media formats come from the platforms the caller hands in
 //! ([`DesktopPlatform`], [`PlatformFacts`]).
 //!
+//! Verified manifests, config blobs and selected metadata records are cached by
+//! digest under the local image store’s `cache/remote/` directory. Every read
+//! verifies the digest again; corrupt entries are discarded. Entries are limited
+//! to the existing small-blob limit, with a soft 64 MiB total cap and oldest-first
+//! eviction. This leaves room for thousands of ordinary records without an
+//! unbounded disk footprint. Payload layers never enter this cache. Immutable
+//! tag mappings persist per host, repository and tag; aliases resolve again
+//! after restart, and Refresh resolves tags again. Registry or login changes
+//! discard the host’s mappings. Content stays local, including private records,
+//! and the cache never sends it anywhere.
+//!
 //! Pull runs in [`crate::remote_pull`]; the desktop's library window draws
 //! both.
+
+#[path = "remote_cache.rs"]
+pub(crate) mod cache;
+
+use cache::{RemoteCache, Session};
 
 use crate::{
     platform::{DesktopPlatform, PlatformFacts},
@@ -830,6 +845,7 @@ pub struct Job {
     pub host: String,
     pub accounts: Accounts,
     pub cancel: Arc<AtomicBool>,
+    cache: Arc<std::sync::Mutex<Session>>,
 }
 
 /// Work for the library worker.
@@ -1227,6 +1243,11 @@ fn failure(error: Error, client: Option<&Client>) -> End {
     })
 }
 
+fn remote_cache(store: &Store, job: &Job, entry: &RegistryEntry) -> RemoteCache {
+    let identity = format!("{entry:?} {:?}", job.accounts.env.login_for(&job.host));
+    RemoteCache::open(store, &job.host, identity.as_bytes(), job.cache.clone())
+}
+
 /// The client of connection tests, with its short timeouts and a stored
 /// login sent from the first request, and the registry's entry.
 fn connect(job: &Job) -> Result<(Client, RegistryEntry), End> {
@@ -1264,6 +1285,7 @@ fn listed_under(entry: &RegistryEntry, repository: &str) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn tag_row(
     client: &Client,
+    cache: &RemoteCache,
     store: &Store,
     repository: &str,
     tag: &str,
@@ -1281,21 +1303,20 @@ fn tag_row(
         .flat_map(|platform| platform.validators())
         .collect();
     let runtime = store.compatibility_with(&providers);
-    let read =
-        match browse::read_tag_with_compatibility(client, repository, tag, cancelled, &runtime) {
-            Ok(read) => read,
-            Err(error) if ends_job(&error) => return Err(error),
-            Err(error) => {
-                return Ok(TagRow {
-                    tag: tag.into(),
-                    local_tag,
-                    record: Err(text(&error)),
-                    local: None,
-                    stored: BTreeSet::new(),
-                    newest_revision: None,
-                })
-            }
-        };
+    let read = match browse::read_tag_cached(client, repository, tag, cancelled, &runtime, cache) {
+        Ok(read) => read,
+        Err(error) if ends_job(&error) => return Err(error),
+        Err(error) => {
+            return Ok(TagRow {
+                tag: tag.into(),
+                local_tag,
+                record: Err(text(&error)),
+                local: None,
+                stored: BTreeSet::new(),
+                newest_revision: None,
+            })
+        }
+    };
     let levels = runtime.levels(
         read.annotations
             .get("unemu.platform")
@@ -1314,7 +1335,7 @@ fn tag_row(
         ),
     };
     let title = if details && levels.core.is_some() && requirements.unmet_reason(levels).is_none() {
-        match browse::read_title(client, repository, &read, cancelled) {
+        match browse::read_title_cached(client, repository, &read, cancelled, cache) {
             Ok(title) => Some(Ok(details_of(title))),
             Err(error) if ends_job(&error) => return Err(error),
             Err(error) => Some(Err(text(&error))),
@@ -1370,18 +1391,21 @@ fn tag_row(
 
 /// The version tag `latest` names, when the repository has `latest` and it
 /// names one of the [`LATEST_LOOKUPS`] newest `candidates`; compared by the
-/// manifest digests the registry answers, without reading a manifest.
+/// manifest digests the registry answers. A cold immutable version also reads
+/// its manifest once so the fresh mapping can persist for the next session.
 fn latest_version(
     client: &Client,
     repository: &str,
     tags: &[String],
     candidates: &[String],
+    cache: &dyn browse::Cache,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<String>, Error> {
     if !tags.iter().any(|tag| tag == "latest") {
         return Ok(None);
     }
-    let Some(latest) = client.manifest_digest(repository, "latest")? else {
+    let Some(latest) = browse::cached_digest(client, repository, "latest", cache, cancelled)?
+    else {
         return Ok(None);
     };
     for tag in candidates
@@ -1392,7 +1416,9 @@ fn latest_version(
         if cancelled() {
             return Err(Error::Cancelled);
         }
-        if client.manifest_digest(repository, tag)?.as_ref() == Some(&latest) {
+        if browse::cached_digest(client, repository, tag, cache, cancelled)?.as_ref()
+            == Some(&latest)
+        {
             return Ok(Some(tag.clone()));
         }
     }
@@ -1406,8 +1432,10 @@ fn latest_version(
 /// whose 16 newest versions all need a newer release stands for its newest
 /// one, dimmed, even if an older one would run. Sets the representative, the
 /// rows read and the newer versions' reasons.
+#[allow(clippy::too_many_arguments)]
 fn choose_representative(
     client: &Client,
+    cache: &RemoteCache,
     store: &Store,
     row: &mut RepositoryRow,
     library: &[(String, Digest)],
@@ -1415,7 +1443,7 @@ fn choose_representative(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     let candidates = candidates(&row.tags);
-    let latest = match latest_version(client, &row.name, &row.tags, &candidates, cancelled) {
+    let latest = match latest_version(client, &row.name, &row.tags, &candidates, cache, cancelled) {
         Ok(latest) => latest,
         Err(error) if ends_job(&error) => return Err(error),
         // A `latest` that cannot be compared makes no claim.
@@ -1428,7 +1456,7 @@ fn choose_representative(
             return Err(Error::Cancelled);
         }
         let read = tag_row(
-            client, store, &row.name, tag, &row.tags, library, false, platforms, cancelled,
+            client, cache, store, &row.name, tag, &row.tags, library, false, platforms, cancelled,
         )?;
         let runs = read
             .record
@@ -1495,6 +1523,7 @@ fn list(
         Ok(connected) => connected,
         Err(end) => return end,
     };
+    let cache = remote_cache(store, job, &entry);
     let page = match client.catalog_page(CATALOG_PAGE, next.as_deref()) {
         Ok(page) => page,
         Err(error) => return failure(error, Some(&client)),
@@ -1524,9 +1553,9 @@ fn list(
         match browse::list_tags(&client, &row.name, TAG_PAGE, &stopped) {
             Ok(tags) => {
                 row.tags = tags;
-                if let Err(error) =
-                    choose_representative(&client, store, &mut row, &library, platforms, &stopped)
-                {
+                if let Err(error) = choose_representative(
+                    &client, &cache, store, &mut row, &library, platforms, &stopped,
+                ) {
                     return failure(error, Some(&client));
                 }
             }
@@ -1556,16 +1585,17 @@ fn read(
         Ok(library) => library,
         Err(message) => return End::Failed(Failure::Local(message)),
     };
-    let (client, _) = match connect(job) {
+    let (client, entry) = match connect(job) {
         Ok(connected) => connected,
         Err(end) => return end,
     };
+    let cache = remote_cache(store, job, &entry);
     for tag in tags {
         if stopped() {
             return End::Stopped;
         }
         match tag_row(
-            &client, store, repository, tag, listed, &library, details, platforms, &stopped,
+            &client, &cache, store, repository, tag, listed, &library, details, platforms, &stopped,
         ) {
             Ok(row) => send(BrowseEvent::Tag {
                 id: job.id,
@@ -1677,6 +1707,7 @@ pub struct RegistryView {
     /// The running listing reads a next page, after rows that stay.
     paging: bool,
     reads: Vec<Reading>,
+    cache: Arc<std::sync::Mutex<Session>>,
 }
 
 impl RegistryView {
@@ -1693,6 +1724,7 @@ impl RegistryView {
             listing: None,
             paging: false,
             reads: Vec::new(),
+            cache: Arc::default(),
         }
     }
 
@@ -2078,6 +2110,12 @@ impl Remotes {
     /// [`Remotes::reload`] does, and use its logins from now on.
     pub fn reattach(&mut self, accounts: Accounts) {
         self.accounts = accounts;
+        for view in &mut self.registries {
+            view.cache = Arc::new(std::sync::Mutex::new(Session {
+                invalidate: true,
+                ..Session::default()
+            }));
+        }
         self.reload();
     }
 
@@ -2162,6 +2200,10 @@ impl Remotes {
             host: host.into(),
             accounts: self.accounts.clone(),
             cancel: cancel.clone(),
+            cache: self
+                .registry(host)
+                .map(|v| v.cache.clone())
+                .unwrap_or_default(),
         };
         (Box::new(job), Running { id, cancel })
     }
@@ -2192,6 +2234,16 @@ impl Remotes {
         let view = self.registries.iter_mut().find(|v| v.host == host)?;
         let listing = view.state == State::Listing;
         view.cancel_jobs();
+        let invalidate = view
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .invalidate;
+        view.cache = Arc::new(std::sync::Mutex::new(Session {
+            revalidate: true,
+            invalidate,
+            ..Session::default()
+        }));
         let shown = (std::mem::take(&mut view.repositories), view.next.take());
         if !(listing && view.previous.is_some()) {
             view.previous = (!shown.0.is_empty()).then_some(shown);

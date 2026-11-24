@@ -37,6 +37,7 @@ mod merge_tests {
         editor.host = host.clone();
         editor.plain_http = true;
         page.submit_editor();
+        page.wait();
         page.set_default_selected();
         // `image login` runs the same accounts function with the same store.
         accounts::log_in(

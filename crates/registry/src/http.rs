@@ -126,6 +126,15 @@ impl Response {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn manifest_head(url: &str, digest: &crate::Digest) -> Self {
+        let mut response = Self::manifest_bytes(url, Vec::new());
+        response
+            .headers
+            .push(("docker-content-digest".into(), digest.to_string()));
+        response
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()

@@ -105,6 +105,7 @@ struct State {
     /// Requests whose `METHOD path` starts with this are answered with this
     /// server error status.
     failing: Option<(String, u16)>,
+    omit_manifest_digest: bool,
 }
 
 /// A running mock registry; dropping it stops the server.
@@ -175,6 +176,16 @@ impl MockRegistry {
 
     pub fn clear_log(&self) {
         self.state().log.clear();
+    }
+
+    /// A registry whose manifest HEAD needs the client's GET fallback.
+    pub fn omit_manifest_digest(&self) {
+        self.state().omit_manifest_digest = true;
+    }
+
+    /// Replace the accepted login while the registry stays at the same host.
+    pub fn replace_login(&self, user: &str, password: &str) {
+        self.state().policy.user = Some((user.into(), password.into()));
     }
 
     pub fn inject_patch_fault(&self, fault: PatchFault) {
@@ -881,10 +892,14 @@ fn manifest(state: &mut State, request: &Request, repository: &str, reference: &
                 .map(|m| (d.clone(), m.clone()))
         }) {
             Some((digest, (media_type, bytes))) if accepts(request, &media_type) => {
-                Response::new(200)
+                let response = Response::new(200)
                     .header("Content-Type", media_type)
-                    .header("Docker-Content-Digest", digest)
-                    .body(bytes)
+                    .body(bytes);
+                if state.omit_manifest_digest {
+                    response
+                } else {
+                    response.header("Docker-Content-Digest", digest)
+                }
             }
             _ => Response::error(404, "MANIFEST_UNKNOWN"),
         },

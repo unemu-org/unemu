@@ -6,14 +6,15 @@
 //! command line uses: preferences change under the shared lock, keeping keys
 //! other writers own, and the list is read again afterwards, so an `image
 //! login` made meanwhile shows up. Anything that may reach the credential
-//! store or the network (sign-in states, logging in and out, removing,
-//! testing a connection) runs as a background job that the frame loop polls,
-//! because a Keychain call can wait on a system prompt. Each job has an id and
+//! store, network or browse cache (sign-in states, logging in and out,
+//! removing, saving settings, testing a connection) runs as a background job
+//! that the frame loop polls, because a Keychain call can wait on a system prompt. Each job has an id and
 //! a cancel flag: a closed dialog cancels its login, and a late result never
 //! changes a newer dialog. The password typed into Log in moves into the login
 //! job and leaves the dialog at once; it is never shown, logged, or written to
 //! preferences. Secrets are not wiped from memory after use.
 
+use crate::remote_browse::cache::with_preferences_host_invalidated;
 use image_registry::{
     accounts::{self, ConnectionReport, LoginCheck, LoginOutcome},
     client::ApiAccess,
@@ -175,9 +176,15 @@ enum Work {
     Test { host: String },
     LogOut { host: String },
     Remove { host: String },
+    Edit { host: String },
 }
 
 enum Outcome {
+    Edit {
+        host: String,
+        editor: Option<Editor>,
+        result: Result<(), String>,
+    },
     SignIn {
         generation: u64,
         states: Vec<(String, SignIn)>,
@@ -205,13 +212,18 @@ impl Work {
     fn account(&self) -> bool {
         matches!(
             self,
-            Self::Login { .. } | Self::LogOut { .. } | Self::Remove { .. }
+            Self::Login { .. } | Self::LogOut { .. } | Self::Remove { .. } | Self::Edit { .. }
         )
     }
 
     /// The outcome of a job whose thread ended without sending one.
     fn lost(self) -> Outcome {
         match self {
+            Self::Edit { host } => Outcome::Edit {
+                host,
+                editor: None,
+                result: Err(LOST.into()),
+            },
             Self::SignIn { generation, hosts } => Outcome::SignIn {
                 generation,
                 states: hosts
@@ -432,8 +444,8 @@ impl RegistriesPage {
         self.path.is_some()
     }
 
-    /// A login, logout or removal is running. A cancelled login does not
-    /// count: it can keep nothing, so a new login may start beside it.
+    /// A login, logout, removal or settings save is running. A cancelled login
+    /// does not count: it can keep nothing, so a new login may start beside it.
     pub fn account_busy(&self) -> bool {
         self.jobs
             .iter()
@@ -636,25 +648,31 @@ impl RegistriesPage {
     }
 
     fn apply_edit(&mut self, edit: EntryEdit) {
-        let adding = edit.started.is_none();
-        let host = edit.host.clone();
-        match self.write(|table| config::apply_entry_edit(table, &edit)) {
-            Ok(()) => {
-                self.editor = None;
-                if let Some(index) = self.rows.iter().position(|r| r.entry.host == host) {
-                    self.selected = index;
-                }
-                self.status = Some(if adding {
-                    format!("Added {host}.")
-                } else {
-                    format!("Saved {host}.")
-                });
-            }
-            Err(error) => match &mut self.editor {
-                Some(editor) => editor.error = Some(error),
-                None => self.error = Some(error),
-            },
+        if self
+            .jobs
+            .iter()
+            .any(|job| matches!(job.work, Work::Edit { .. }))
+        {
+            return;
         }
+        let Some(path) = self.path.clone() else {
+            self.error = Some("The preferences file location is unavailable.".into());
+            return;
+        };
+        let host = edit.host.clone();
+        let editor = self.editor.clone();
+        self.spawn(Work::Edit { host: host.clone() }, move |_| {
+            let result = with_preferences_host_invalidated(&path, &host, || {
+                config::update_preferences(&path, |table| config::apply_entry_edit(table, &edit))
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            });
+            Outcome::Edit {
+                host,
+                editor,
+                result,
+            }
+        });
     }
 
     fn write(
@@ -687,8 +705,11 @@ impl RegistriesPage {
         let store = self.store.clone();
         let target = host.clone();
         self.spawn(Work::Remove { host: host.clone() }, move |_| {
+            let result = with_preferences_host_invalidated(&path, &target, || {
+                accounts::remove(&path, &target, &*store).map_err(|e| e.to_string())
+            });
             Outcome::Remove {
-                result: accounts::remove(&path, &target, &*store).map_err(|e| e.to_string()),
+                result,
                 host: target,
             }
         });
@@ -780,8 +801,10 @@ impl RegistriesPage {
         };
         let id = self.spawn(work, move |cancel| {
             let proceed = || !cancel.load(Ordering::SeqCst);
-            let result = accounts::log_in(&path, &host, &user, &secret, &*store, &proceed)
-                .map_err(LoginFailure::from);
+            let result = with_preferences_host_invalidated(&path, &host, || {
+                accounts::log_in(&path, &host, &user, &secret, &*store, &proceed)
+                    .map_err(LoginFailure::from)
+            });
             Outcome::Login { host, user, result }
         });
         if let Some(dialog) = &mut self.login {
@@ -810,9 +833,14 @@ impl RegistriesPage {
         self.rows[self.selected].sign_in = SignIn::Checking;
         let store = self.store.clone();
         let target = host.clone();
-        self.spawn(Work::LogOut { host }, move |_| Outcome::LogOut {
-            result: accounts::log_out(&path, &target, &*store).map_err(|e| e.to_string()),
-            host: target,
+        self.spawn(Work::LogOut { host }, move |_| {
+            let result = with_preferences_host_invalidated(&path, &target, || {
+                accounts::log_out(&path, &target, &*store).map_err(|e| e.to_string())
+            });
+            Outcome::LogOut {
+                result,
+                host: target,
+            }
         });
     }
 
@@ -874,6 +902,34 @@ impl RegistriesPage {
 
     fn finish(&mut self, id: u64, outcome: Outcome) {
         match outcome {
+            Outcome::Edit {
+                host,
+                editor,
+                result,
+            } => {
+                let current = self.editor == editor;
+                self.reload();
+                match result {
+                    Ok(()) => {
+                        if current {
+                            self.editor = None;
+                        }
+                        if let Some(index) = self.rows.iter().position(|r| r.entry.host == host) {
+                            self.selected = index;
+                        }
+                        self.error = None;
+                        self.status = Some(if editor.is_some_and(|e| e.started.is_none()) {
+                            format!("Added {host}.")
+                        } else {
+                            format!("Saved {host}.")
+                        });
+                    }
+                    Err(error) => match self.editor.as_mut().filter(|_| current) {
+                        Some(editor) => editor.error = Some(error),
+                        None => self.error = Some(error),
+                    },
+                }
+            }
             Outcome::SignIn { generation, states } => {
                 if generation != self.generation {
                     return;
@@ -1218,6 +1274,7 @@ mod tests {
             f.page.open_add();
             f.page.editor.as_mut().unwrap().host = bad.into();
             f.page.submit_editor();
+            f.page.wait();
             let error = f.page.editor.as_ref().unwrap().error.clone();
             assert!(error.unwrap().contains("dot or a port"), "{bad}");
         }
@@ -1227,6 +1284,7 @@ mod tests {
         editor.host = "nas.example:5000".into();
         editor.plain_http = true;
         f.page.submit_editor();
+        f.page.wait();
         assert!(f
             .page
             .editor
@@ -1238,6 +1296,7 @@ mod tests {
             .contains("loopback"));
         f.page.editor.as_mut().unwrap().plain_http = false;
         f.page.submit_editor();
+        f.page.wait();
         assert!(f.page.editor.is_none());
         assert_eq!(f.page.status.as_deref(), Some("Added nas.example:5000."));
         let row = f.page.selected_row().unwrap();
@@ -1246,6 +1305,7 @@ mod tests {
         f.page.open_add();
         f.page.editor.as_mut().unwrap().host = "NAS.example:5000".into();
         f.page.submit_editor();
+        f.page.wait();
         assert!(f
             .page
             .editor
@@ -1291,6 +1351,7 @@ mod tests {
         f.page.open_edit();
         f.page.editor.as_mut().unwrap().private = false;
         f.page.submit_editor();
+        f.page.wait();
         assert_eq!(
             f.page.confirm,
             Some(ConfirmPublic {
@@ -1306,13 +1367,16 @@ mod tests {
         assert!(f.page.editor.is_some(), "cancel returns to the editor");
 
         f.page.submit_editor();
+        f.page.wait();
         f.page.confirm_public(true);
+        f.page.wait();
         assert!(f.page.editor.is_none());
         assert!(!f.page.selected_row().unwrap().entry.private);
         // Marking private again needs no confirmation.
         f.page.open_edit();
         f.page.editor.as_mut().unwrap().private = true;
         f.page.submit_editor();
+        f.page.wait();
         assert!(f.page.confirm.is_none());
         assert!(f.page.selected_row().unwrap().entry.private);
     }
@@ -1490,9 +1554,8 @@ mod tests {
         f.page.open_add();
         f.page.editor.as_mut().unwrap().host = "lab.example".into();
         f.page.submit_editor();
-        select(&mut f.page, "nas.example");
-        assert_eq!(f.page.selected_row().unwrap().sign_in, SignIn::Checking);
         f.page.wait();
+        select(&mut f.page, "nas.example");
         let row = f.page.selected_row().unwrap();
         assert_eq!(row.entry.user.as_deref(), Some("me"));
         assert_eq!(row.sign_in, SignIn::SignedIn);
@@ -1512,6 +1575,7 @@ mod tests {
             std::fs::write(&f.path, entry(meanwhile)).unwrap();
             f.page.editor.as_mut().unwrap().plain_http = true;
             f.page.submit_editor();
+            f.page.wait();
             let error = f.page.editor.as_ref().unwrap().error.clone().unwrap();
             assert!(error.contains("changed meanwhile"), "{error}");
             assert_eq!(std::fs::read_to_string(&f.path).unwrap(), entry(meanwhile));
@@ -1520,6 +1584,7 @@ mod tests {
             assert_eq!(f.page.editor.as_ref().unwrap().private, meanwhile);
             f.page.editor.as_mut().unwrap().plain_http = true;
             f.page.submit_editor();
+            f.page.wait();
             assert!(f.page.editor.is_none());
             let row = f.page.selected_row().unwrap();
             assert_eq!((row.entry.private, row.entry.plain_http), (meanwhile, true));
@@ -1827,6 +1892,7 @@ mod tests {
         editor.host = DEFAULT_REGISTRY.into();
         editor.namespaces = "unemu, private/".into();
         f.page.submit_editor();
+        f.page.wait();
         assert_eq!(
             f.page.status.as_deref(),
             Some("Added registry.unemu.dev."),
@@ -1846,6 +1912,7 @@ mod tests {
             ("unemu, private", true)
         );
         f.page.submit_editor();
+        f.page.wait();
         assert_eq!(
             f.page.status.as_deref(),
             Some("No changes to registry.unemu.dev.")
@@ -1855,6 +1922,7 @@ mod tests {
         f.page.open_edit();
         f.page.editor.as_mut().unwrap().namespaces = "unemu, private, games:public".into();
         f.page.submit_editor();
+        f.page.wait();
         assert!(f.page.confirm.is_none());
         assert_eq!(f.page.status.as_deref(), Some("Saved registry.unemu.dev."));
         assert_eq!(f.page.table().len(), 4);
@@ -1867,6 +1935,7 @@ mod tests {
             f.page.open_edit();
             f.page.editor.as_mut().unwrap().namespaces = typed.into();
             f.page.submit_editor();
+            f.page.wait();
             let error = f.page.editor.as_ref().unwrap().error.clone().unwrap();
             assert!(error.contains(problem), "{typed}: {error}");
         }
@@ -1875,6 +1944,7 @@ mod tests {
         f.page.open_edit();
         f.page.editor.as_mut().unwrap().namespaces = "unemu, private:public, games:public".into();
         f.page.submit_editor();
+        f.page.wait();
         let confirm = f.page.confirm.clone().unwrap();
         assert_eq!(confirm.exposed, "registry.unemu.dev/private/");
         assert!(f
@@ -1885,6 +1955,7 @@ mod tests {
             .scope("private/a")
             .private());
         f.page.confirm_public(true);
+        f.page.wait();
         assert!(!f
             .page
             .selected_row()
@@ -1909,6 +1980,7 @@ mod tests {
         .unwrap();
         f.page.editor.as_mut().unwrap().namespaces = "unemu".into();
         f.page.submit_editor();
+        f.page.wait();
         let error = f.page.editor.as_ref().unwrap().error.clone().unwrap();
         assert!(error.contains("changed meanwhile"), "{error}");
         let table = config::read_preferences(&f.path).unwrap();

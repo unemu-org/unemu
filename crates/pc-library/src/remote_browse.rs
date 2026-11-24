@@ -300,6 +300,447 @@ mod tests {
         }
     }
 
+    fn browse_requests(registry: &MockRegistry) -> Vec<String> {
+        registry
+            .log()
+            .into_iter()
+            .filter(|line| {
+                line.contains("/manifests/")
+                    || line.contains("/blobs/")
+                    || line.contains("/tags/list")
+            })
+            .collect()
+    }
+
+    fn browse_open(setup: &Setup, remotes: &mut Remotes, host: &str) {
+        let request = remotes.open_node(host);
+        assert_eq!(ended(&setup.answer(remotes, request)), &End::Done);
+    }
+
+    fn browse_select(setup: &Setup, remotes: &mut Remotes, host: &str, tag: &str) {
+        let request = remotes.select(host, "media/set", tag);
+        assert_eq!(ended(&setup.answer(remotes, request)), &End::Done);
+    }
+
+    #[test]
+    fn persistent_browse_select_fetches_only_missing_metadata() {
+        let registry = MockRegistry::start(open_registry());
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let host = registry.host();
+        browse_open(&setup, &mut remotes, &host);
+        registry.clear_log();
+        browse_select(&setup, &mut remotes, &host, "1.4-r1");
+        assert_eq!(
+            browse_requests(&registry),
+            [format!(
+                "GET /v2/media/set/blobs/{}",
+                image.manifest.layers.last().unwrap().digest
+            )]
+        );
+    }
+
+    #[test]
+    fn persistent_browse_refresh_reuses_unchanged_records() {
+        let registry = MockRegistry::start(open_registry());
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let host = registry.host();
+        browse_open(&setup, &mut remotes, &host);
+        browse_select(&setup, &mut remotes, &host, "1.4-r1");
+        registry.clear_log();
+        let request = remotes.refresh(&host);
+        setup.answer(&mut remotes, request);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list",
+                "HEAD /v2/media/set/manifests/1.4-r1"
+            ]
+        );
+        registry.clear_log();
+        browse_select(&setup, &mut remotes, &host, "1.4-r1");
+        assert!(browse_requests(&registry).is_empty());
+    }
+
+    #[test]
+    fn persistent_browse_refresh_reads_a_moved_immutable_tag() {
+        let registry = MockRegistry::start(open_registry());
+        let first = media_set("first", &["1.44M"]);
+        first.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let host = registry.host();
+        browse_open(&setup, &mut remotes, &host);
+        let second = media_set("second", &["1.44M"]);
+        second.seed(&registry, "media/set", "1.4-r1");
+        registry.clear_log();
+        let request = remotes.refresh(&host);
+        setup.answer(&mut remotes, request);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list".into(),
+                "HEAD /v2/media/set/manifests/1.4-r1".into(),
+                format!("GET /v2/media/set/manifests/{}", second.digest),
+                format!("GET /v2/media/set/blobs/{}", Digest::of(&second.config)),
+            ]
+        );
+        assert_eq!(
+            remotes
+                .registry(&host)
+                .unwrap()
+                .repository("media/set")
+                .unwrap()
+                .row("1.4-r1")
+                .unwrap()
+                .record
+                .as_ref()
+                .unwrap()
+                .digest,
+            second.digest
+        );
+        drop(remotes);
+        let mut remotes = setup.remotes();
+        registry.clear_log();
+        browse_open(&setup, &mut remotes, &host);
+        assert_eq!(browse_requests(&registry), ["GET /v2/media/set/tags/list"]);
+        assert_eq!(
+            remotes
+                .registry(&host)
+                .unwrap()
+                .repository("media/set")
+                .unwrap()
+                .row("1.4-r1")
+                .unwrap()
+                .record
+                .as_ref()
+                .unwrap()
+                .digest,
+            second.digest
+        );
+    }
+
+    #[test]
+    fn persistent_browse_older_session_cannot_restore_a_mapping_replaced_by_refresh() {
+        let registry = MockRegistry::start(open_registry());
+        let first = media_set("first", &["1.44M"]);
+        first.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        let mut older = setup.remotes();
+        browse_open(&setup, &mut older, &host);
+        let mut newer = setup.remotes();
+        browse_open(&setup, &mut newer, &host);
+        let second = media_set("second", &["1.44M"]);
+        second.seed(&registry, "media/set", "1.4-r1");
+        let request = newer.refresh(&host);
+        assert_eq!(ended(&setup.answer(&mut newer, request)), &End::Done);
+        registry.clear_log();
+        browse_select(&setup, &mut older, &host, "1.4-r1");
+        assert_eq!(
+            browse_requests(&registry),
+            [format!(
+                "GET /v2/media/set/blobs/{}",
+                first.manifest.layers.last().unwrap().digest
+            )]
+        );
+        drop(older);
+        drop(newer);
+        registry.clear_log();
+        let mut restarted = setup.remotes();
+        browse_open(&setup, &mut restarted, &host);
+        assert_eq!(browse_requests(&registry), ["GET /v2/media/set/tags/list"]);
+        assert_eq!(
+            restarted
+                .registry(&host)
+                .unwrap()
+                .repository("media/set")
+                .unwrap()
+                .row("1.4-r1")
+                .unwrap()
+                .record
+                .as_ref()
+                .unwrap()
+                .digest,
+            second.digest
+        );
+    }
+
+    #[test]
+    fn persistent_browse_preferences_login_replacement_invalidates_unread_mappings() {
+        use image_registry::config;
+        use library_model::registries_model::RegistriesPage;
+        let registry = MockRegistry::start(Policy {
+            user: Some(("reader".into(), "first secret".into())),
+            ..open_registry()
+        });
+        let first = media_set("first", &["1.44M"]);
+        first.seed(&registry, "media/set", "1.4-r1");
+        first.seed(&registry, "media/set", "1.4-r2");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        config::update_preferences(&setup.preferences, |table| {
+            table.insert(
+                "store_root".into(),
+                toml::Value::String(setup.store.root().to_str().unwrap().into()),
+            );
+            config::set_user(table, &host, "reader")
+        })
+        .unwrap();
+        // Keep the sign-in dialog open while another client supplies the first login.
+        let mut page = RegistriesPage::new(
+            Some(setup.preferences.clone()),
+            setup.accounts.store.clone(),
+            EnvCredentials::default(),
+        );
+        page.wait();
+        page.selected = page
+            .rows
+            .iter()
+            .position(|row| row.entry.host == host)
+            .unwrap();
+        page.open_login();
+        assert!(page.login.is_some());
+        setup
+            .accounts
+            .store
+            .store(&host, "reader", &Secret::new("first secret"))
+            .unwrap();
+        let mut remotes = setup.remotes();
+        browse_open(&setup, &mut remotes, &host);
+        let request = remotes.expand(&host, "media/set");
+        setup.answer(&mut remotes, request);
+        registry.replace_login("reader", "second secret");
+        let changed = media_set("changed", &["1.44M"]);
+        changed.seed(&registry, "media/set", "1.4-r1");
+        page.login.as_mut().unwrap().password = "second secret".into();
+        page.submit_login();
+        page.wait();
+        assert!(page.login.is_none(), "{:?}", page.login);
+        remotes.reload();
+        let request = remotes.refresh(&host);
+        setup.answer(&mut remotes, request);
+        drop(remotes);
+        let mut restarted = setup.remotes();
+        browse_open(&setup, &mut restarted, &host);
+        registry.clear_log();
+        let request = restarted.expand(&host, "media/set");
+        setup.answer(&mut restarted, request);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "HEAD /v2/media/set/manifests/1.4-r1".to_owned(),
+                format!("GET /v2/media/set/manifests/{}", changed.digest),
+                format!("GET /v2/media/set/blobs/{}", Digest::of(&changed.config)),
+            ]
+        );
+        assert_eq!(
+            restarted
+                .registry(&host)
+                .unwrap()
+                .repository("media/set")
+                .unwrap()
+                .row("1.4-r1")
+                .unwrap()
+                .record
+                .as_ref()
+                .unwrap()
+                .digest,
+            changed.digest
+        );
+    }
+
+    #[test]
+    fn persistent_browse_restart_keeps_immutable_tags_and_metadata() {
+        let registry = MockRegistry::start(open_registry());
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let host = registry.host();
+        browse_open(&setup, &mut remotes, &host);
+        browse_select(&setup, &mut remotes, &host, "1.4-r1");
+        drop(remotes);
+        let mut remotes = setup.remotes();
+        registry.clear_log();
+        browse_open(&setup, &mut remotes, &host);
+        assert_eq!(browse_requests(&registry), ["GET /v2/media/set/tags/list"]);
+        registry.clear_log();
+        browse_select(&setup, &mut remotes, &host, "1.4-r1");
+        assert!(browse_requests(&registry).is_empty());
+    }
+
+    #[test]
+    fn persistent_browse_restart_resolves_aliases_again() {
+        let registry = MockRegistry::start(open_registry());
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        browse_open(&setup, &mut setup.remotes(), &host);
+        let mut remotes = setup.remotes();
+        registry.clear_log();
+        browse_open(&setup, &mut remotes, &host);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list",
+                "HEAD /v2/media/set/manifests/1.4"
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_browse_headerless_resolution_keeps_the_fallback_manifest() {
+        let registry = MockRegistry::start(open_registry());
+        registry.omit_manifest_digest();
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        let mut remotes = setup.remotes();
+        browse_open(&setup, &mut remotes, &host);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list".into(),
+                "HEAD /v2/media/set/manifests/1.4".into(),
+                "GET /v2/media/set/manifests/1.4".into(),
+                format!("GET /v2/media/set/blobs/{}", Digest::of(&image.config)),
+            ]
+        );
+        registry.clear_log();
+        browse_select(&setup, &mut remotes, &host, "1.4");
+        assert_eq!(
+            browse_requests(&registry),
+            [format!(
+                "GET /v2/media/set/blobs/{}",
+                image.manifest.layers.last().unwrap().digest
+            )]
+        );
+    }
+
+    #[test]
+    fn persistent_browse_machine_versions_and_latest_share_verified_manifests() {
+        let registry = MockRegistry::start(open_registry());
+        let image = machine("machine", &[]);
+        image.seed(&registry, "games/a", "1.0.0");
+        image.seed(&registry, "games/a", "latest");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        browse_open(&setup, &mut setup.remotes(), &host);
+        registry.clear_log();
+        browse_open(&setup, &mut setup.remotes(), &host);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/games/a/tags/list",
+                "HEAD /v2/games/a/manifests/latest"
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_browse_changed_settings_and_login_drop_host_mappings() {
+        let registry = MockRegistry::start(open_registry());
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        browse_open(&setup, &mut setup.remotes(), &host);
+        std::fs::write(
+            &setup.preferences,
+            format!("[[registries]]\n{}\nprivate = true\n", plain(&host)),
+        )
+        .unwrap();
+        let mut remotes = setup.remotes();
+        registry.clear_log();
+        browse_open(&setup, &mut remotes, &host);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list",
+                "HEAD /v2/media/set/manifests/1.4-r1"
+            ]
+        );
+        remotes.reattach(setup.accounts.clone());
+        registry.clear_log();
+        let request = remotes.refresh(&host);
+        setup.answer(&mut remotes, request);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list",
+                "HEAD /v2/media/set/manifests/1.4-r1"
+            ]
+        );
+    }
+
+    #[test]
+    fn persistent_browse_replacing_login_invalidates_unread_immutable_mappings() {
+        let registry = MockRegistry::start(Policy {
+            user: Some(("reader".into(), "first secret".into())),
+            ..open_registry()
+        });
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4-r1");
+        image.seed(&registry, "media/set", "1.4-r2");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        let mut accounts = setup.accounts.clone();
+        accounts.env = EnvCredentials::new(&host, "reader", "first secret");
+        let mut remotes = Remotes::open(accounts.clone());
+        browse_open(&setup, &mut remotes, &host);
+        let request = remotes.expand(&host, "media/set");
+        setup.answer(&mut remotes, request);
+        registry.replace_login("reader", "second secret");
+        accounts.env = EnvCredentials::new(&host, "reader", "second secret");
+        remotes.reattach(accounts.clone());
+        let request = remotes.refresh(&host);
+        setup.answer(&mut remotes, request);
+        drop(remotes);
+        let mut remotes = Remotes::open(accounts);
+        browse_open(&setup, &mut remotes, &host);
+        registry.clear_log();
+        let request = remotes.expand(&host, "media/set");
+        setup.answer(&mut remotes, request);
+        assert_eq!(
+            browse_requests(&registry),
+            ["HEAD /v2/media/set/manifests/1.4-r1"]
+        );
+    }
+
+    #[test]
+    fn persistent_browse_corrupt_content_is_fetched_and_replaced() {
+        let registry = MockRegistry::start(open_registry());
+        let image = media_set("first", &["1.44M"]);
+        image.seed(&registry, "media/set", "1.4-r1");
+        let setup = Setup::with(&registry);
+        let host = registry.host();
+        browse_open(&setup, &mut setup.remotes(), &host);
+        let path = setup
+            .store
+            .root()
+            .join("cache/remote")
+            .join(format!("content-{}", Digest::of(&image.config).hex()));
+        std::fs::write(&path, b"truncated").unwrap();
+        registry.clear_log();
+        browse_open(&setup, &mut setup.remotes(), &host);
+        assert_eq!(
+            browse_requests(&registry),
+            [
+                "GET /v2/media/set/tags/list".into(),
+                format!("GET /v2/media/set/blobs/{}", Digest::of(&image.config))
+            ]
+        );
+        assert_eq!(std::fs::read(path).unwrap(), image.config);
+    }
+
     #[test]
     fn local_push_records_keep_the_injected_core_and_frontend_levels() {
         use image_store::compat::{AppVersion as V, Compatibility, MIN_FRONTEND_VERSION};
@@ -669,11 +1110,8 @@ mod tests {
         let metadata = set.layers.last().unwrap();
         assert_eq!(
             blob_requests(&registry),
-            [
-                Digest::of(&set.config).to_string(),
-                Digest::of(metadata).to_string()
-            ],
-            "the set's config record again, then its metadata; never a disk"
+            [Digest::of(metadata).to_string()],
+            "only missing metadata; the config is cached and disks are never read"
         );
         for layer in set.layer_digests().into_iter().chain(game.layer_digests()) {
             if layer != Digest::of(metadata) {
@@ -1146,15 +1584,26 @@ mod tests {
     }
 
     #[test]
-    fn browsing_writes_nothing_to_disk() {
-        let registry = MockRegistry::start(open_registry());
+    fn browsing_writes_only_credential_free_remote_cache_files() {
+        let password = "browse-password-sentinel";
+        let token = "browse-token-sentinel";
+        let registry = MockRegistry::start(Policy {
+            user: Some(("reader".into(), password.into())),
+            ..open_registry()
+        });
         let host = registry.host();
         let set = media_set("Keen", &["360K"]);
         set.seed(&registry, "games/keen", "1.4");
         let game = machine("pop", &[(TITLE, "Prince of Persia")]);
         game.seed(&registry, "games/pop", "1.0.0");
         game.seed(&registry, "games/pop", "1.1.0");
-        let setup = Setup::with(&registry);
+        let mut setup = Setup::with(&registry);
+        setup.accounts.env = EnvCredentials::new(&host, "reader", password);
+        setup
+            .accounts
+            .store
+            .store(&host, "reader", &Secret::new(token))
+            .unwrap();
         game.tag(&setup.store, &format!("{host}/games/pop:1.0.0"));
         let store_before = files(setup.store.root());
         let config = setup.preferences.parent().unwrap().to_owned();
@@ -1162,19 +1611,60 @@ mod tests {
 
         let mut remotes = setup.remotes();
         let request = remotes.open_node(&host);
-        setup.answer(&mut remotes, request);
+        assert_eq!(ended(&setup.answer(&mut remotes, request)), &End::Done);
+        let row = remotes
+            .registry(&host)
+            .unwrap()
+            .repository("games/pop")
+            .unwrap();
+        assert_eq!(row.read.len(), 1);
+        assert_eq!(row.read[0].tag, "1.1.0");
+        assert_eq!(row.read[0].record.as_ref().unwrap().digest, game.digest);
         let request = remotes.expand(&host, "games/pop");
-        setup.answer(&mut remotes, request);
+        assert!(request.is_some(), "the older tag still needs its own row");
+        assert_eq!(ended(&setup.answer(&mut remotes, request)), &End::Done);
+        let row = remotes
+            .registry(&host)
+            .unwrap()
+            .repository("games/pop")
+            .unwrap();
+        assert_eq!(row.read.len(), 2);
+        assert!(row
+            .read
+            .iter()
+            .all(|row| row.record.as_ref().unwrap().digest == game.digest));
+        assert!(remotes.expand(&host, "games/pop").is_none());
         let request = remotes.library_changed();
         setup.answer(&mut remotes, request);
         let request = remotes.refresh(&host);
         setup.answer(&mut remotes, request);
         assert_eq!(remotes.registry(&host).unwrap().state, State::Listed);
 
+        let cache = setup.store.root().join("cache");
+        let remote = cache.join("remote");
+        let mut store_after = files(setup.store.root());
+        assert!(store_after
+            .keys()
+            .any(|path| path.starts_with(&remote) && path.is_file()));
+        for (path, bytes) in &store_after {
+            if path.starts_with(&remote) {
+                for secret in [password, token] {
+                    assert!(
+                        !bytes
+                            .windows(secret.len())
+                            .any(|part| part == secret.as_bytes()),
+                        "cached credentials in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        store_after.retain(|path, _| {
+            store_before.contains_key(path) || (path != &cache && !path.starts_with(&remote))
+        });
         assert_eq!(
-            files(setup.store.root()),
-            store_before,
-            "the store is unchanged"
+            store_after, store_before,
+            "only remote cache files may appear; images, index, locks and staging stay unchanged"
         );
         assert_eq!(
             files(&config),
@@ -1376,6 +1866,14 @@ mod tests {
         setup.answer(&mut remotes, request);
         other.clear_log();
         let request = remotes.select(&host, "games/keen", "1.4");
+        std::fs::remove_file(
+            setup
+                .store
+                .root()
+                .join("cache/remote")
+                .join(format!("content-{}", Digest::of(&set.config).hex())),
+        )
+        .unwrap();
         let config = format!("GET /v2/games/keen/blobs/{}", Digest::of(&set.config));
         let late = stop_while_held(&setup, &mut remotes, &other, &host, &config, request);
         assert_eq!(ended(&late), &End::Stopped);
@@ -1727,7 +2225,8 @@ mod tests {
                 .iter()
                 .filter(|line| line.starts_with("GET /v2/games/many/manifests/"))
                 .count(),
-            LATEST_LOOKUPS
+            1,
+            "all sixteen tags name the same verified manifest"
         );
     }
 }

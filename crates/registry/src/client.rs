@@ -554,6 +554,25 @@ impl Client {
     /// index or a Docker manifest list is present: push decides from this
     /// whether a tag is new.
     pub fn manifest_digest(&self, repository: &str, reference: &str) -> Result<Option<Digest>> {
+        self.manifest_resolution(repository, reference)
+            .map(|(digest, _)| digest)
+    }
+
+    /// Resolve a reference, retaining bytes when a headerless HEAD needs a GET.
+    pub fn manifest_resolution(
+        &self,
+        repository: &str,
+        reference: &str,
+    ) -> Result<(Option<Digest>, Option<FetchedManifest>)> {
+        self.manifest_resolution_cancellable(repository, reference, &|| false)
+    }
+
+    pub(crate) fn manifest_resolution_cancellable(
+        &self,
+        repository: &str,
+        reference: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(Option<Digest>, Option<FetchedManifest>)> {
         let target = format!("/v2/{repository}/manifests/{reference}");
         let accept = [("Accept", ACCEPT_ANY_MANIFEST.to_owned())];
         let response = self.send(Method::Head, &target, &accept, &Body::Empty)?;
@@ -561,13 +580,18 @@ impl Client {
             200 => match response.header("docker-content-digest") {
                 Some(value) => value
                     .parse()
-                    .map(Some)
+                    .map(|digest| (Some(digest), None))
                     .map_err(|_| Error::Protocol("invalid Docker-Content-Digest".into())),
-                None => Ok(self
-                    .fetch_manifest(repository, reference, ACCEPT_ANY_MANIFEST)?
-                    .map(|m| m.digest)),
+                None => {
+                    if cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    let fetched =
+                        self.fetch_manifest(repository, reference, ACCEPT_ANY_MANIFEST)?;
+                    Ok((fetched.as_ref().map(|m| m.digest.clone()), fetched))
+                }
             },
-            404 => Ok(None),
+            404 => Ok((None, None)),
             _ => Err(self.status_error(Method::Head, &target, response)),
         }
     }
