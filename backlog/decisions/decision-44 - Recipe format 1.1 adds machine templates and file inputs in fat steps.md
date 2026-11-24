@@ -16,6 +16,11 @@ precondition of §3, and decided that published 1.0 recipes stay at 1.0,
 that 1.1 ships whole in one front-end release, and that a 1.1 recipe may
 name a 1.0 work file.
 
+Revised on 2026-11-24 (maintainer) after the core's content-bindings seam
+landed with contract 0.6. §3, §4, §5, §8 and §9 now follow the implemented
+shape. In particular, §8 no longer asks template recipes to reproduce the
+published `1.2.0` template digests, which the composed config cannot do.
+
 ## Context
 
 Decision-43 §6 and [recipes §9](../docs/design/recipes.md#9-what-binds-forever)
@@ -69,7 +74,7 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    [machine]
    name = "unemu/open-at"
    platform = "ibm-pc"
-   version = "1.2.0"
+   version = "1.3.0"
    digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" # Placeholder.
 
    [template]
@@ -114,9 +119,9 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    the system BIOS.
    Media are optional to declare but required once referenced.
 
-   This config excerpt omits other hardware tables. Its new fields await
-   unemupc's schema decision. That design allows additive fields at schema 1,
-   but the pinned parser refuses them. These are proposals, not current keys.
+   This config excerpt omits other hardware tables. The bound forms shown
+   landed in `pc-config` with contract 0.6; unemupc's
+   `backlog/docs/design/content-bindings.md` is their reference.
 
    ```toml
    schema = 1
@@ -165,13 +170,13 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
 
    For a media-bearing variant, replace A:'s `empty = true` with
    `inserted = { use = "dos", medium = "disk-1" }` and declare a pinned
-   `[use.dos]`. This form is proposed too. The `system` geometry explicitly
+   `[use.dos]`. This form landed too. The `system` geometry explicitly
    matches its recipe declaration: `1024 × 16 × 63 × 512 = 528,482,304` bytes.
    The games template's SB16 at `0x220`, IRQ 5, DMA 1/5, serial mouse and
    Lo-tech EMS at `0x260`/`0xD000` live entirely in config bytes.
 
-   As a precondition, the binding lands in the core and the contract first,
-   then unemu re-pins. The PC core's maintainers propose this shape:
+   As a precondition, the binding landed in the core and the contract first
+   (`unemu-core-api` v0.6.0), and unemu re-pinned. Its shape:
 
    - `pc-config` gains one bound source form, not a family: a use id plus an
      item inside it (a ROM id, or a medium member such as `disk-1`), and
@@ -198,13 +203,25 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
      supplied facts into a validated, host-free prepared machine. The front
      end only hashes bytes and supplies facts. Other cores, such as a
      cartridge bound by digest, can use the same seam. The contract change
-     needs its own decision record in unemu-core-api.
+     has its own decision record in unemu-core-api.
+   - What landed adds three constraints. Bound firmware must be in the PC
+     core's reviewed catalogue; `compose` refuses other firmware as
+     Unsupported, so new firmware enters the catalogue upstream first. The
+     composed document is a portable launch
+     (`application/vnd.unemu.pc.launch.v1+toml`), and a template stores it
+     as its machine config. Every front-end reader of stored images must
+     therefore accept that type beside the older
+     `application/vnd.unemu.machine.config.v1+toml`. The composed ROM rows
+     carry no source-archive links, so the front end adds each ROM's
+     corresponding source archive and rights from the package itself, and
+     the guard of §5 still holds.
 
 4. **Construction is deterministic and locks preserve its result.** Use
    the store or pull by manifest digest under the consent policy. Copy ROMs,
    corresponding source archives and referenced media into the verified
-   closure, retaining rights and package provenance. Zero bases remain
-   immutable behind the overlay and must match their bound geometry.
+   closure, retaining rights and package provenance. A declared disk is a
+   document-owned zero disk without a base blob. Its size must match its
+   bound geometry, and writes stay behind the overlay interface.
 
    The same recipe, inputs and app version must give the same digest, without
    clock, host paths, traversal order or host defaults. Sort unique unlocked
@@ -219,9 +236,8 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    kind segment under `unemu/recipes/`. A new kind must not shadow an existing
    template. Software's source directory may be `recipes/machine/`.
    Outputs keep SemVer and the guarded `latest` policy. Recipe tags match
-   immutable output tags and have no `latest`. Recommend keeping published
-   1.0 recipes at 1.0: no same-output tag replacement with 1.1. The maintainer
-   must settle this restriction on decision-35's correction rule.
+   immutable output tags and have no `latest`. Published 1.0 recipes stay at
+   1.0: no same-output tag replacement with 1.1.
 
    Add `application/vnd.unemu.recipe.machine.v1`; retain existing types,
    annotation keys and recipe guards. Bundle only recipe, permitted texts
@@ -270,14 +286,25 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    INFERENCE: direct placement is the smaller change. Recommend it and defer
    file-set references and general tree composition.
 
-8. **Acceptance requires existing output bytes.** `ufe-xle.2` must emit
-   exact machine-document bytes for both templates and their schema.
-   Software keeps those bytes as file inputs. Emit the historical generated
-   documents and stored configs as comparison evidence. Recipes using the
-   emitted inputs must reproduce today's `1.2.0` digests in
-   `pc-image/tests/template.rs::PINNED`. New bindings and sorting cannot
-   excuse changed pins. Locks preserve historical names, bytes and layer
-   order. Cross-check software's published template digests independently.
+8. **Acceptance: equal machines, new outputs, equal media bytes.**
+   Templates built from 1.1 recipes are new outputs. Their config is the
+   portable launch that `compose` returns. The published `1.2.0` templates
+   (`pc-image/tests/template.rs::PINNED`) store the older config form, with
+   other firmware keys, a zero-base disk and source-archive links. Different
+   config bytes give a different manifest, so a recipe cannot reproduce
+   those digests. The published `1.2.0` templates stay as they are, like the
+   1.0 recipes. The recipe-built templates take the next minor version,
+   `1.3.0`, and carry the markers of §6, so older front ends keep `1.2.0`.
+
+   `ufe-xle.2` emits the bound-form config documents for open-at and
+   open-at-games. Software keeps them as file inputs and publishes `1.3.0`.
+   Acceptance has three parts. Two builds of each recipe in fresh stores
+   give the same digest. Each `1.3.0` machine equals its `1.2.0` counterpart
+   in hardware, firmware bytes and roles, drives, disk sizes and archival
+   closure (source archives and rights); only config encoding, asset keys
+   and layer order may differ. Software's published `1.3.0` digests are
+   cross-checked independently. Locks of `1.3.0` then pin those digests
+   under decision-34's rules.
 
    Equal content, names, times, order and volume keys must give byte-identical
    volumes to the 1.0 two-input form. The earlier APPEND digest
@@ -296,7 +323,8 @@ paths; `lower.rs:37` lets a reader serve logical keys without host files.
    `backlog/docs/design/recipe-schema-1.1.json` beside unchanged 1.0.
    Use separate version tables, test both for drift and distribute both
    with checksums. Retain the 1.0 corpus and add conformance for bindings,
-   templates, guards and FAT equality.
+   templates, guards and FAT equality. The schema of the PC launch document
+   stays with the core; this repository publishes only recipe schemas.
 
    Changes to 1.0 plan JSON must be additive, without renaming, removing or
    reinterpreting fields. New rows describe artifacts and FAT `placements`
