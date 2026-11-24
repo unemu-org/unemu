@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The keys of recipe version 1.0 (recipes §6.2 to §6.10, §6.16): every
+//! The keys of recipe versions 1.0 and 1.1 (recipes §6): every
 //! table, its keys, their types and which are required.
 //!
 //! This one description drives both the parser's checks of rule 1 (an
@@ -86,6 +86,8 @@ pub enum Ty {
     },
     /// A need's alternatives: one string or a non-empty array of strings.
     Needs,
+    /// A tree reference or direct file-input placements.
+    FatOperand,
 }
 
 /// The form of a map's keys.
@@ -192,9 +194,11 @@ const LABELS: Ty = Ty::Array {
 /// of an OCI tag with `-r` and the 19 digits of the largest revision.
 pub const MAX_RELEASE: usize = 128 - 2 - 19;
 
-/// The recipe version this release reads (recipes §6.1, §9).
-pub const VERSION: &str = "1.0";
-const RECIPE: Field = req("recipe", Ty::Enum(&[VERSION]));
+/// The newest recipe version this release reads (recipes §6.1, §9).
+pub const VERSION: &str = "1.1";
+pub const VERSIONS: &[&str] = &["1.0", VERSION];
+const RECIPE: Field = req("recipe", Ty::Enum(&["1.0"]));
+const RECIPE_1_1: Field = req("recipe", Ty::Enum(&[VERSION]));
 
 /// `[media]`, `[firmware]`: the output's identity (recipes §6.3).
 pub static IDENTITY: Table = table(
@@ -776,6 +780,112 @@ fn reference(value: &str) -> bool {
     match value.split_once('/') {
         Some((name, member)) => image_store::media_set::valid_id(name) && path(member),
         None => image_store::media_set::valid_id(value),
+    }
+}
+
+/// A direct file-input placement in a FAT root directory.
+pub static PLACEMENT: Table = table(
+    "fat-placement",
+    &[
+        req("from", Ty::Str(Text::Ref)),
+        req("dos_name", Ty::Str(Text::Line)),
+        opt("time", Ty::Time),
+    ],
+);
+pub const PLACEMENTS: Ty = Ty::Array {
+    item: &Ty::Table(&PLACEMENT),
+    min: 1,
+};
+
+pub static FAT_1_1: Table = Table {
+    name: "fat-step",
+    marker: Some("fat"),
+    fields: &[
+        req("id", Ty::Str(Text::Id)),
+        req("fat", Ty::FatOperand),
+        req("format", Ty::Vocab(Vocab::VolumeFormat)),
+        opt("label", LINE),
+        opt(
+            "serial",
+            Ty::Int {
+                min: 0,
+                max: u32::MAX as i64,
+            },
+        ),
+        opt("order", Ty::Enum(ORDERS)),
+        opt("time", Ty::Time),
+        opt("volumes", Ty::Int { min: 2, max: 9999 }),
+    ],
+};
+
+pub static MEDIAFILE_1_1: Table = table(
+    "mediafile",
+    &[
+        RECIPE_1_1,
+        opt("work", Ty::Str(Text::Id)),
+        req("media", Ty::Table(&IDENTITY)),
+        opt("title", Ty::Table(&TITLE)),
+        opt("license", Ty::Table(&LICENSE)),
+        opt("needs", NEEDS),
+        opt("ids", IDS),
+        opt("input", INPUTS),
+        opt("step", STEPS),
+        opt(
+            "medium",
+            Ty::Array {
+                item: &Ty::Table(&MEDIUM),
+                min: 0,
+            },
+        ),
+        opt("extra", EXTRAS),
+        opt("attachment", ATTACHMENTS),
+    ],
+);
+
+pub static FIRMWAREFILE_1_1: Table = table(
+    "firmwarefile",
+    &[
+        RECIPE_1_1,
+        req("firmware", Ty::Table(&IDENTITY)),
+        opt("package", Ty::Table(&PACKAGE)),
+        opt("license", Ty::Table(&LICENSE)),
+        opt("ids", IDS),
+        opt("input", INPUTS),
+        opt("step", STEPS),
+        opt(
+            "rom",
+            Ty::Array {
+                item: &Ty::OneOf(&[&ROM_PARTS, &ROM_FILE]),
+                min: 0,
+            },
+        ),
+        opt("extra", EXTRAS),
+        opt("attachment", ATTACHMENTS),
+    ],
+);
+
+pub static WORK_FILE_1_1: Table = table(
+    "work-file",
+    &[
+        RECIPE_1_1,
+        req("work", Ty::Table(&WORK)),
+        opt("title", Ty::Table(&WORK_TITLE)),
+        opt("ids", IDS),
+        opt("needs", NEEDS),
+    ],
+);
+
+/// Select the closed table for a recipe version, sharing unchanged tables.
+pub fn version_table(table: &'static Table, version: &str) -> &'static Table {
+    if version != "1.1" {
+        return table;
+    }
+    match table.name {
+        "fat-step" => &FAT_1_1,
+        "mediafile" => &MEDIAFILE_1_1,
+        "firmwarefile" => &FIRMWAREFILE_1_1,
+        "work-file" => &WORK_FILE_1_1,
+        _ => table,
     }
 }
 

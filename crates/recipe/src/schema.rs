@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The JSON Schema (draft 2020-12) of recipe version 1.0, written from the
+//! The JSON Schemas (draft 2020-12) of recipe versions 1.0 and 1.1, written from the
 //! key tables of [`crate::spec`] and the vocabularies of the providers, so
 //! that it cannot drift from the checker (recipes §4.6, §19.2).
 //!
@@ -19,19 +19,37 @@ use serde_json::{json, Map, Value};
 
 /// The schema for `providers`, as pretty JSON with a final line break.
 pub fn render(providers: &[&dyn Provider]) -> String {
-    let mut text = serde_json::to_string_pretty(&schema(providers)).unwrap_or_default();
+    render_version(providers, "1.0")
+}
+
+/// Render a supported version without changing an older schema.
+pub fn render_version(providers: &[&dyn Provider], version: &str) -> String {
+    let mut text =
+        serde_json::to_string_pretty(&schema_version(providers, version)).unwrap_or_default();
     text.push('\n');
     text
 }
 
 /// The schema for `providers`.
 pub fn schema(providers: &[&dyn Provider]) -> Value {
+    schema_version(providers, "1.0")
+}
+
+/// The closed schema of a supported recipe version.
+pub fn schema_version(providers: &[&dyn Provider], version: &str) -> Value {
+    assert!(
+        spec::VERSIONS.contains(&version),
+        "unsupported recipe schema version"
+    );
     let mut defs = Map::new();
     for form in TEXTS {
         defs.insert(text_name(*form).to_owned(), text_schema(*form));
     }
     defs.insert("local-time".into(), local_time());
-    let mut writer = Writer { defs };
+    let mut writer = Writer {
+        defs,
+        version: version.to_owned(),
+    };
     let roots: [(&str, &str, &'static Table); 2] = [
         ("mediafile", "media", &spec::MEDIAFILE),
         ("firmwarefile", "firmware", &spec::FIRMWAREFILE),
@@ -54,7 +72,7 @@ pub fn schema(providers: &[&dyn Provider]) -> Value {
     let work = writer.table(&spec::WORK_FILE, None);
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "unemupc recipe 1.0: Mediafile, Firmwarefile or work file",
+        "title": format!("unemupc recipe {version}: Mediafile, Firmwarefile or work file"),
         "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by unemu recipe check.",
         "type": "object",
         "if": { "properties": { "work": { "type": "object" } }, "required": ["work"] },
@@ -70,6 +88,7 @@ pub fn schema(providers: &[&dyn Provider]) -> Value {
 
 struct Writer {
     defs: Map<String, Value>,
+    version: String,
 }
 
 /// Whether a table holds a provider's vocabulary anywhere below it.
@@ -94,6 +113,7 @@ impl Writer {
     /// The definition of `table` for `provider` (`None`: any platform),
     /// written once; returns its name.
     fn table(&mut self, table: &'static Table, provider: Option<&dyn Provider>) -> String {
+        let table = spec::version_table(table, &self.version);
         let name = match (has_vocab(table), provider) {
             (false, _) => table.name.to_owned(),
             (true, Some(provider)) => format!("{}.{}", table.name, provider.platform()),
@@ -160,6 +180,9 @@ impl Writer {
                 json!({ "oneOf": refs })
             }
             Ty::Map { key, value } => self.map(*key, value, provider),
+            Ty::FatOperand => {
+                json!({ "oneOf": [self.ty(&Ty::Str(Text::Ref), provider), self.ty(&spec::PLACEMENTS, provider)] })
+            }
             Ty::Needs => need_values(&json!({ "type": "string", "pattern": NEED_VALUE }), false),
         }
     }

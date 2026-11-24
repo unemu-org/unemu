@@ -691,3 +691,374 @@ fn recipe_build_usage_errors_exit_2() {
         "{errors}"
     );
 }
+
+fn placement_recipe(operand: &str, keys: &str) -> String {
+    format!(
+        r#"recipe = "1.1"
+[media]
+name = "private/media/ibm-pc/placements"
+platform = "ibm-pc"
+revision = 1
+[title]
+title = "Placements"
+[input.zip]
+name = "package.zip"
+size = 512
+sha256 = "{hash}"
+urls = ["https://example.org/dl/package.zip"]
+[[step]]
+id = "disk"
+fat = {operand}
+format = "1.44M"
+{keys}
+[[medium]]
+id = "disk-1"
+label = "Disk 1"
+format = "1.44M"
+from = "disk"
+"#,
+        hash = sha(&[42; 512]),
+    )
+}
+
+fn built_volume(t: &Temp, text: &str, name: &str) -> (Vec<u8>, recipe::build::Report) {
+    use std::io::Read;
+    let path = t.path(&format!("{name}.media.toml"));
+    fs::write(&path, text).unwrap();
+    let lib = t.path("lib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("package.zip"), [42; 512]).unwrap();
+    let store = image_store::Store::open(t.path(name)).unwrap();
+    let (outcome, _) = build(&path, &store, &[lib], None);
+    let Outcome::Built(report) = outcome else {
+        panic!("{outcome:#?}")
+    };
+    let image = store
+        .resolve(
+            &report.reference,
+            &image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats),
+        )
+        .unwrap();
+    let bytes = report
+        .outputs
+        .iter()
+        .find_map(|hash| {
+            let digest = format!("sha256:{hash}").parse().unwrap();
+            let mut bytes = Vec::new();
+            image
+                .content_reader(&digest)
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+            (bytes.len() == 1_474_560).then_some(bytes)
+        })
+        .unwrap();
+    (bytes, *report)
+}
+
+#[test]
+fn placements_build_identical_volumes_for_order_and_time_rules() {
+    let t = Temp::new("placements-equality");
+    let mut cases = Vec::new();
+    for order in ["", "order = \"listed\"\n"] {
+        for step_time in ["", "time = 1994-03-02T04:06:08\n"] {
+            for entry_time in ["", ", time = 2001-02-03T08:10:12"] {
+                let placements = format!("[{{ from = \"zip\", dos_name = \"Z.ZIP\"{entry_time} }}, {{ from = \"zip\", dos_name = \"A.ZIP\" }}]");
+                let keys = format!("{order}{step_time}label = \"PACKAGES\"\nserial = 12345");
+                let direct = placement_recipe(&placements, &keys);
+                let legacy = placement_recipe("\"package\"", &keys)
+                    .replace("recipe = \"1.1\"", "recipe = \"1.0\"")
+                    .replace("[[step]]", &format!(
+                        "[input.package]\nname = \"package\"\nfiles = [{{ path = \"Z.ZIP\", size = 512, sha256 = \"{hash}\"{entry_time} }}, {{ path = \"A.ZIP\", size = 512, sha256 = \"{hash}\" }}]\n[[step]]", hash = sha(&[42; 512])))
+                    // The historical two-input form must use its file input too.
+                    + "\n[[extra]]\nid = \"archive\"\nfile_name = \"package.zip\"\nkind = \"archive\"\nfrom = \"zip\"\n";
+                let n = cases.len();
+                let (actual, report) = built_volume(&t, &direct, &format!("direct-{n}"));
+                let (expected, _) = built_volume(&t, &legacy, &format!("legacy-{n}"));
+                assert_eq!(actual.len(), 1_474_560);
+                assert_eq!(actual, expected, "{order} {step_time} {entry_time}");
+                assert_eq!(report.kept.len(), 1);
+                assert_eq!(report.kept[0].input, "zip");
+                let json = report.plan.json();
+                assert!(json["steps"][0]["operand"].is_null());
+                assert_eq!(json["steps"][0]["placements"][0]["from"], "zip");
+                assert_eq!(json["steps"][0]["placements"][0]["dos_name"], "Z.ZIP");
+                assert_eq!(
+                    json["steps"][0]["placements"][0]["time"].as_str(),
+                    (!entry_time.is_empty()).then_some("2001-02-03T08:10:12")
+                );
+                assert_eq!(json["steps"][0]["placements"][1]["dos_name"], "A.ZIP");
+                assert!(json["steps"][0]["placements"][1]["time"].is_null());
+                assert!(!json.as_object().unwrap().contains_key("schema_version"));
+                cases.push(actual);
+            }
+        }
+    }
+    // Both order and each timestamp choice affect bytes, so equality cannot
+    // pass through an encoder that ignores the keys in both forms.
+    assert_ne!(cases[0], cases[4]);
+    assert_ne!(cases[0], cases[2]);
+    assert_ne!(cases[0], cases[1]);
+}
+
+#[test]
+fn placements_are_refused_statically_before_fetch_or_payload_reads() {
+    let t = Temp::new("placements-refusals");
+    let bad = [
+        ("[]", "at least 1"),
+        ("[{ dos_name = \"A.ZIP\" }]", "missing key `from`"),
+        ("[{ from = \"zip\" }]", "missing key `dos_name`"),
+        (
+            "[{ from = \"zip\", dos_name = \"A.ZIP\", other = 1 }]",
+            "unknown key `other`",
+        ),
+        (
+            "[{ from = \"zip\", dos_name = \"A.ZIP\", dos_path = \"DIR/A.ZIP\" }]",
+            "unknown key `dos_path`",
+        ),
+        ("[{ from = \"disk\", dos_name = \"A.ZIP\" }]", "file input"),
+        (
+            "[{ from = \"unknown\", dos_name = \"A.ZIP\" }]",
+            "file input",
+        ),
+        (
+            "[{ from = \"zip/member\", dos_name = \"A.ZIP\" }]",
+            "file input",
+        ),
+        (
+            "[{ from = \"package\", dos_name = \"A.ZIP\" }]",
+            "file input",
+        ),
+        (
+            "[{ from = \"package/A.ZIP\", dos_name = \"A.ZIP\" }]",
+            "file input",
+        ),
+        ("[{ from = \"zip\", dos_name = \"a.zip\" }]", "refuses"),
+        (
+            "[{ from = \"zip\", dos_name = \"TOOLONGNAME.ZIP\" }]",
+            "refuses",
+        ),
+        (
+            "[{ from = \"zip\", dos_name = \"DIR/A.ZIP\" }]",
+            "root-level",
+        ),
+        (
+            "[{ from = \"zip\", dos_name = \"A.ZIP\" }, { from = \"zip\", dos_name = \"A.ZIP\" }]",
+            "stored name",
+        ),
+    ];
+    let store = image_store::Store::open(t.path("store")).unwrap();
+    let fetcher = FakeFetcher::new(vec![("package.zip", vec![42; 512])]);
+    let mut missing_findings = Vec::new();
+    for (operand, finding) in bad {
+        let mut text = placement_recipe(operand, "");
+        if operand.contains("package") {
+            text = text.replace("[[step]]", &format!("[input.package]\nname = \"package\"\nfiles = [{{ path = \"A.ZIP\", size = 512, sha256 = \"{}\" }}]\n[[step]]", sha(&[42; 512])));
+        }
+        let path = t.path("bad.media.toml");
+        fs::write(&path, &text).unwrap();
+        let (outcome, _) = build_with_fetcher(&path, &store, &[], Some(&fetcher));
+        let Outcome::Refused(report) = outcome else {
+            panic!("{operand}: {outcome:#?}")
+        };
+        if !report.findings.iter().any(|f| f.message.contains(finding)) {
+            missing_findings.push(format!("{operand}: expected {finding:?}: {report:#?}"));
+        }
+    }
+    assert!(fetcher.requests.lock().unwrap().is_empty());
+    assert_eq!(tags(&store), 0);
+    assert!(
+        missing_findings.is_empty(),
+        "{}",
+        missing_findings.join("\n")
+    );
+}
+
+#[test]
+fn placements_require_version_one_one() {
+    let text = placement_recipe("[{ from = \"zip\", dos_name = \"A.ZIP\" }]", "")
+        .replace("recipe = \"1.1\"", "recipe = \"1.0\"");
+    let t = Temp::new("placements-version");
+    let path = t.path("old.media.toml");
+    fs::write(&path, text).unwrap();
+    let report = recipe::check_paths(&[path], recipe::Providers(&PROVIDERS)).unwrap();
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.path == "step[1].fat" && f.message.contains("requires recipe 1.1")),
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn placements_fetch_required_file_once_with_consent() {
+    let t = Temp::new("placements-fetch");
+    let path = t.path("fetch.media.toml");
+    fs::write(
+        &path,
+        placement_recipe(
+            "[{ from = \"zip\", dos_name = \"A.ZIP\" }, { from = \"zip\", dos_name = \"B.ZIP\" }]",
+            "",
+        ),
+    )
+    .unwrap();
+    let store = image_store::Store::open(t.path("store")).unwrap();
+    let (outcome, _) = build(&path, &store, &[], None);
+    let Outcome::Missing(plan) = outcome else {
+        panic!("{outcome:#?}")
+    };
+    assert_eq!(plan.inputs.len(), 1);
+    assert!(!plan.inputs[0].optional);
+    let (address, requests) = serve(vec![("package.zip", vec![42; 512])]);
+    let (outcome, _) = build(&path, &store, &[], Some(&address));
+    let Outcome::Built(report) = outcome else {
+        panic!("{outcome:#?}")
+    };
+    assert_eq!(*requests.lock().unwrap(), ["/dl/package.zip"]);
+    assert_eq!(report.kept.len(), 1);
+    assert_eq!(
+        fs::read(store.root().join(DOWNLOADS).join(sha(&[42; 512]))).unwrap(),
+        [42; 512]
+    );
+}
+
+#[test]
+fn placements_fetch_and_cache_through_the_cli_with_a_fake_fetcher() {
+    let t = Temp::new("placements-fake-fetch");
+    let path = t.path("fetch.media.toml");
+    fs::write(
+        &path,
+        placement_recipe(
+            "[{ from = \"zip\", dos_name = \"A.ZIP\" }, { from = \"zip\", dos_name = \"B.ZIP\" }]",
+            "",
+        ),
+    )
+    .unwrap();
+    let fetcher = FakeFetcher::new(vec![("package.zip", vec![42; 512])]);
+    let (code, output, errors) = upcli_fetch(&t, &path, &fetcher);
+    assert_eq!(code, 0, "{output}\n{errors}");
+    assert_eq!(
+        *fetcher.requests.lock().unwrap(),
+        ["https://example.org/dl/package.zip"]
+    );
+    assert!(
+        output.contains("fetch: downloading 1 input (512 bytes)"),
+        "{output}"
+    );
+    assert_eq!(
+        fs::read(t.path("store").join(DOWNLOADS).join(sha(&[42; 512]))).unwrap(),
+        [42; 512]
+    );
+    assert_eq!(
+        output.matches("  zip: kept as files in disk-1.img").count(),
+        1,
+        "{output}"
+    );
+}
+
+#[test]
+fn placements_schema_one_one_matches_the_generated_file() {
+    let generated = recipe::schema::render_version(&[&pc_image::recipe::PcRecipes], "1.1");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../backlog/docs/design/recipe-schema-1.1.json");
+    if std::env::var_os("UNEMUPC_WRITE_RECIPE_SCHEMA").is_some() {
+        fs::write(&path, &generated).unwrap();
+    }
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        generated,
+        "regenerate with UNEMUPC_WRITE_RECIPE_SCHEMA=1"
+    );
+}
+
+#[test]
+fn placements_work_file_versions_follow_the_recipe_without_restamping() {
+    let t = Temp::new("placements-work-version");
+    let path = t.path("disk.media.toml");
+    let text = placement_recipe("[{ from = \"zip\", dos_name = \"A.ZIP\" }]", "").replace(
+        "recipe = \"1.1\"",
+        "recipe = \"1.1\"\nwork = \"placements\"",
+    );
+    fs::write(&path, &text).unwrap();
+    let work = t.path("placements.work.toml");
+    let old = "recipe = \"1.0\"\n[work]\nid = \"placements\"\n[title]\ntitle = \"Packages\"\n";
+    let check = |path: &std::path::Path| {
+        recipe::check_paths(&[path.to_path_buf()], recipe::Providers(&PROVIDERS)).unwrap()
+    };
+    // A 1.1 recipe may name a 1.0 work file, so one work can hold releases
+    // of both versions; a 1.1 work file serves it too.
+    fs::write(&work, old).unwrap();
+    let report = check(&path);
+    assert!(report.is_clean(), "{report:#?}");
+    fs::write(&work, old.replace("1.0", "1.1")).unwrap();
+    let report = check(&path);
+    assert!(report.is_clean(), "{report:#?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(
+        fs::read_to_string(&work).unwrap(),
+        old.replace("1.0", "1.1")
+    );
+    // A 1.0 recipe still names a 1.0 work file only.
+    let frozen = t.path("frozen.media.toml");
+    let frozen_text = placement_recipe("\"package\"", "").replace(
+        "recipe = \"1.1\"",
+        "recipe = \"1.0\"\nwork = \"placements\"",
+    );
+    fs::write(&frozen, &frozen_text).unwrap();
+    let report = check(&frozen);
+    assert!(
+        format!("{report:#?}")
+            .contains("a recipe names a work file of its own recipe version only"),
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn placements_bundle_inputs_are_listed_once_and_rebuild_their_lock() {
+    let t = Temp::new("placements-pin");
+    let path = t.path("disk.media.toml");
+    let original = placement_recipe(
+        "[{ from = \"zip\", dos_name = \"A.ZIP\" }, { from = \"zip\", dos_name = \"B.ZIP\" }]",
+        "",
+    )
+    .replace(
+        "urls = [\"https://example.org/dl/package.zip\"]",
+        "bundle = true",
+    );
+    fs::write(&path, original).unwrap();
+    fs::write(t.path("package.zip"), [42; 512]).unwrap();
+    let listed = recipe::inputs::inputs_path(&path, recipe::Providers(&PROVIDERS)).unwrap();
+    let recipe::inputs::Listing::Inputs(inputs) = listed else {
+        panic!("{listed:#?}")
+    };
+    assert!(inputs.rows.is_empty());
+    let mut args = words(&t, &path, &[]);
+    args[1] = "pin".into();
+    let (code, output, errors) = upcli(&args);
+    assert_eq!(code, 0, "{output}\n{errors}");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("recipe = \"1.1\""));
+    assert!(text.contains("digest = \"sha256:"));
+    let lock = recipe::lock::dir(&path);
+    let before: Vec<_> = fs::read_dir(lock.join("sha256"))
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.file_name(), fs::read(e.path()).unwrap())
+        })
+        .collect();
+    let store = image_store::Store::open(t.path("rebuilt")).unwrap();
+    let (outcome, _) = build(&path, &store, &[], None);
+    let Outcome::Built(report) = outcome else {
+        panic!("{outcome:#?}")
+    };
+    assert!(report.locked);
+    assert_eq!(report.plan.inputs.len(), 1);
+    assert_eq!(report.kept.len(), 1);
+    assert_eq!(report.plan.inputs[0].used_by.len(), 1);
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    for (name, bytes) in before {
+        assert_eq!(fs::read(lock.join("sha256").join(name)).unwrap(), bytes);
+    }
+}

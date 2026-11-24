@@ -73,11 +73,13 @@ fn expected(ty: &Ty) -> &'static str {
         Ty::Array { .. } => "an array",
         Ty::Table(_) | Ty::OneOf(_) | Ty::Map { .. } => "a table",
         Ty::Needs => "a string or an array of strings",
+        Ty::FatOperand => "a tree reference or an array of file-input placements",
     }
 }
 
 struct Checker<'a, 's> {
     sink: &'a mut Sink<'s>,
+    version: String,
 }
 
 impl Checker<'_, '_> {
@@ -103,6 +105,15 @@ impl Checker<'_, '_> {
             value: v,
         };
         match (ty, value.get_ref()) {
+            (Ty::FatOperand, _) => self.value(
+                value,
+                path,
+                if matches!(value.get_ref(), DeValue::Array(_)) {
+                    &spec::PLACEMENTS
+                } else {
+                    &REF
+                },
+            ),
             (Ty::Str(form), DeValue::String(text)) => {
                 let text = self.line_ends(&span, text);
                 match form.fault(&text) {
@@ -120,7 +131,16 @@ impl Checker<'_, '_> {
                     let message = if path == "recipe" && text == "0.1" {
                         "recipe \"0.1\" is the experimental format; this unemu reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with unemu recipe check before pinning".to_owned()
                     } else {
-                        format!("{text:?} is not one of {}", names.join(", "))
+                        format!(
+                            "{text:?} is not one of {}",
+                            // Preserve experimental-version findings in the frozen corpus.
+                            if path == "recipe" && !text.starts_with("0.") {
+                                spec::VERSIONS
+                            } else {
+                                names
+                            }
+                            .join(", ")
+                        )
                     };
                     self.finding(&span, path, message);
                     None
@@ -294,6 +314,7 @@ impl Checker<'_, '_> {
         spec: &'static Table,
         skip: &[&str],
     ) -> Node {
+        let spec = spec::version_table(spec, &self.version);
         let mut entries = Vec::new();
         for (key, value) in table {
             let name = key.get_ref().as_ref();
@@ -312,6 +333,18 @@ impl Checker<'_, '_> {
                 );
                 continue;
             };
+            if spec.name == "fat-step"
+                && name == "fat"
+                && self.version == "1.0"
+                && matches!(value.get_ref(), DeValue::Array(_))
+            {
+                self.finding(
+                    &value.span(),
+                    &child,
+                    "the FAT placement array requires recipe 1.1",
+                );
+                continue;
+            }
             if let Some(node) = self.value(value, &child, &field.ty) {
                 entries.push((
                     At {
@@ -549,7 +582,10 @@ fn version(table: &DeTable<'_>) -> Option<At<String>> {
 /// table to tell its kind by.
 pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Option<Document> {
     let table = root.get_ref();
-    let mut checker = Checker { sink };
+    let mut checker = Checker {
+        sink,
+        version: version(table).map(|v| v.value).unwrap_or_default(),
+    };
     if table
         .get("work")
         .is_some_and(|w| matches!(w.get_ref(), DeValue::Table(_)))
@@ -905,6 +941,19 @@ fn step(node: &Node) -> Step {
         },
         Some(name) if name == spec::FAT.name => Op::Fat {
             tree: node.str("fat"),
+            placements: node
+                .get("fat")
+                .filter(|n| matches!(n.value, V::Arr(_)))
+                .map(|n| {
+                    n.items()
+                        .iter()
+                        .map(|p| Placement {
+                            from: p.str("from"),
+                            dos_name: p.str("dos_name"),
+                            time: p.time("time"),
+                        })
+                        .collect()
+                }),
             format: node.str("format"),
             label: node.str("label"),
             serial: node.int("serial"),

@@ -233,13 +233,21 @@ pub(crate) fn check(
             }
         }
         if let (Some(mine), Some(its)) = (&recipe.version, &file.version) {
-            if mine.value != its.value {
+            // Version 1.1 adds no work-file keys, so a 1.0 work file means the
+            // same to a 1.1 recipe: one work may hold 1.0 and 1.1 releases.
+            let older_work = mine.value == "1.1" && its.value == "1.0";
+            if mine.value != its.value && !older_work {
+                let rule = if mine.value == "1.1" {
+                    "a 1.1 recipe names a work file of version 1.0 or 1.1"
+                } else {
+                    "a recipe names a work file of its own recipe version only"
+                };
                 sink.report(
                     Rule::Reference,
                     &mine.span,
                     &mine.path,
                     format!(
-                        "the recipe is {} and its work file {file_name} is {}; a recipe names a work file of its own recipe version only",
+                        "the recipe is {} and its work file {file_name} is {}; {rule}",
                         mine.value, its.value
                     ),
                 );
@@ -590,12 +598,25 @@ fn references(recipe: &Recipe, sink: &mut Sink<'_>, names: &mut Names) -> Split 
             }
             Op::Fat {
                 tree,
+                placements,
                 format,
                 volumes,
                 ..
             } => {
                 if let Some(tree) = tree {
                     names.resolve(sink, tree, Some(index), Want::Tree);
+                }
+                for placement in placements.iter().flatten() {
+                    if let Some(from) = &placement.from {
+                        names.used.insert(base(&from.value).to_owned());
+                        if !recipe.inputs.iter().any(|input| {
+                            input.id.value == from.value
+                                && matches!(input.form, InputForm::File { .. })
+                        }) {
+                            sink.report(Rule::Reference, &from.span, &from.path,
+                                "a FAT placement must name exactly one file input, not a step, file set or member");
+                        }
+                    }
                 }
                 let fat = match (format, &step.id) {
                     (Some(format), Some(id)) => Some((format.value.clone(), id.value.clone())),
@@ -772,7 +793,19 @@ fn closure(recipe: &Recipe, names: &Names, roots: &[String]) -> BTreeSet<String>
 
 fn operands(step: &Step) -> Vec<&str> {
     match &step.op {
-        Op::Unpack { archive: r, .. } | Op::Fat { tree: r, .. } | Op::Text { text: r } => {
+        Op::Fat {
+            tree, placements, ..
+        } => tree
+            .iter()
+            .map(|r| r.value.as_str())
+            .chain(
+                placements
+                    .iter()
+                    .flatten()
+                    .filter_map(|p| p.from.as_ref().map(|r| r.value.as_str())),
+            )
+            .collect(),
+        Op::Unpack { archive: r, .. } | Op::Text { text: r } => {
             r.iter().map(|r| r.value.as_str()).collect()
         }
         Op::Unknown { references } => references.iter().map(|r| r.value.as_str()).collect(),
@@ -1325,7 +1358,8 @@ fn platform_rules(
     }
     for (index, step) in recipe.steps.iter().enumerate() {
         let Op::Fat {
-            tree: Some(tree),
+            tree,
+            placements,
             format: Some(format),
             label,
             ..
@@ -1333,6 +1367,9 @@ fn platform_rules(
         else {
             continue;
         };
+        if tree.is_none() && placements.is_none() {
+            continue;
+        }
         let Some(profile) = media.volume_profile(&format.value) else {
             continue;
         };
@@ -1349,7 +1386,40 @@ fn platform_rules(
                 );
             }
         }
-        if let Some(Value::Tree(members)) = names.resolve(&mut quiet, tree, Some(index), Want::Tree)
+        let mut stored = BTreeSet::new();
+        for name in placements
+            .iter()
+            .flatten()
+            .filter_map(|p| p.dos_name.as_ref())
+        {
+            let fault = if name.value.contains(['/', '\\']) {
+                Some("expected one root-level DOS 8.3 name".to_owned())
+            } else {
+                profile.path_fault(&name.value)
+            };
+            if let Some(fault) = fault {
+                sink.report(
+                    Rule::Platform,
+                    &name.span,
+                    &name.path,
+                    format!(
+                        "the {} volume profile refuses this name: {fault}",
+                        format.value
+                    ),
+                );
+            }
+            if !stored.insert(&name.value) {
+                sink.report(
+                    Rule::Platform,
+                    &name.span,
+                    &name.path,
+                    format!("the stored name `{}` is listed twice", name.value),
+                );
+            }
+        }
+        if let Some(Value::Tree(members)) = tree
+            .as_ref()
+            .and_then(|tree| names.resolve(&mut quiet, tree, Some(index), Want::Tree))
         {
             for member in members {
                 if let Some(fault) = profile.path_fault(&member.path.value) {

@@ -1537,6 +1537,52 @@ A recipe artifact that uses them, or carries a text file, declares 0.0.4
 gains the keys when this is implemented (`about`'s value: a string, or an
 object with exactly `file`).
 
+### 6.17. Version 1.1: direct file-input FAT placements
+
+Version 1.0 is unchanged: its grammar, defaults, schema, step bytes and locks
+remain frozen. A new recipe opts in with `recipe = "1.1"`, still using
+TOML 1.0.0. Its media work file states `recipe = "1.0"` or `"1.1"`, since
+1.1 adds no work-file keys, so one work can hold releases of both versions;
+a 1.0 recipe still names a 1.0 work file only (O4). The work file keeps all
+rules of §6.16; readers never migrate or restamp existing recipes.
+
+The string/tree form of `fat` keeps its meaning. Version 1.1 also permits
+a nonempty array of direct file-input placements:
+
+```toml
+recipe = "1.1"
+# Identity, title, inputs and outputs are declared as in §6.
+[[step]]
+id = "disk"
+fat = [{ from = "zip", dos_name = "APPEND.ZIP" }]
+format = "1.44M"
+order = "listed"
+```
+
+Each entry requires `from` and `dos_name`, and allows `time` under §6.9's
+DOS local-time rules. All other keys, including `dos_path`, are refused.
+`from` names exactly one file input, never a step, file set or member.
+Its size and SHA-256 identity, download consent, bundle and disclosure
+rules are those of any file input; its bytes are copied unchanged.
+`dos_name` is one uppercase root-level 8.3 name accepted by the volume
+profile. Wrong references, invalid names, paths and duplicate stored names
+are refused before payload reads, even when their bytes are equal. The
+array form in a 1.0 file is refused with a finding requiring recipe 1.1.
+
+`order = "listed"` preserves array order; the default name order sorts by
+stored names. Entry `time` overrides step `time`; with neither, entries
+use `1980-01-01T00:00:00`. The step's time still supplies folders and the
+label. Geometry, boot sector, serial, label, splitting and allocation use
+the same volume profile as the tree form: equal ordered path/bytes/time
+tuples and volume keys produce byte-identical volumes to the 1.0 form
+with a file input and a matching file-set tree.
+
+The separate [1.1 editor schema](recipe-schema-1.1.json) is generated and
+drift-tested alongside unchanged [1.0](recipe-schema-1.0.json); both are
+checksummed release assets. Plan JSON keeps existing fields and string
+operands; only an array operand has `operand: null` and adds `placements`
+with `from`, `dos_name` and `time`. Reports credit each input once.
+
 ## 7. Recipes as registry artifacts
 
 ### 7.1. The artifact

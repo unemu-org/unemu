@@ -1,0 +1,102 @@
+{
+  "complete": false,
+  "inputs": [
+    {
+      "form": "file",
+      "found": null,
+      "id": "game",
+      "ids": [],
+      "name": "GAME.ZIP",
+      "near_misses": [],
+      "optional": false,
+      "reason": null,
+      "sha256": "4a70fe9aa6436e02c2dea340fbd1e352e4ef2d8ce6ca52ad25d4b95471fc8bf2",
+      "size": 999,
+      "status": "missing",
+      "urls": [
+        "https://example.org/GAME.ZIP"
+      ],
+      "used_by": [
+        "Disk 1",
+        "A.EXE"
+      ]
+    }
+  ],
+  "kind": "media",
+  "libraries": [],
+  "members": [
+    {
+      "found": null,
+      "near_misses": [],
+      "path": "A.EXE",
+      "sha256": "9827136414f46014fd5f4e2e34453684a802ec3b5752e4e2919296ebb71e1d2e",
+      "size": 12,
+      "step": "files"
+    },
+    {
+      "found": null,
+      "near_misses": [],
+      "path": "DATA/B.DAT",
+      "sha256": "444d5b9f7a03d0847047e0600050207f5c37331b0e73d813118b60578fd911f4",
+      "size": 13,
+      "step": "files"
+    }
+  ],
+  "name": "private/media/ibm-pc/x",
+  "outputs": [
+    {
+      "from": [
+        "disk"
+      ],
+      "id": "disk-1",
+      "kind": "medium",
+      "label": "Disk 1",
+      "missing": [
+        "game"
+      ],
+      "optional": false,
+      "status": "blocked"
+    },
+    {
+      "from": [
+        "files/A.EXE"
+      ],
+      "id": "readme",
+      "kind": "extra",
+      "label": "A.EXE",
+      "missing": [
+        "game"
+      ],
+      "optional": false,
+      "status": "blocked"
+    }
+  ],
+  "recipe": "existing.media.toml",
+  "steps": [
+    {
+      "detail": null,
+      "id": "files",
+      "missing": [
+        "game"
+      ],
+      "operand": "game",
+      "reason": null,
+      "status": "blocked",
+      "verb": "unpack"
+    },
+    {
+      "detail": null,
+      "id": "disk",
+      "missing": [
+        "game"
+      ],
+      "operand": "files",
+      "reason": null,
+      "status": "blocked",
+      "verb": "fat"
+    }
+  ],
+  "store": null,
+  "store_warnings": [],
+  "summary": "missing 1 of 1 input"
+}

@@ -685,6 +685,7 @@ impl Runner<'_> {
             }
             Op::Fat {
                 tree,
+                placements,
                 format,
                 label,
                 serial,
@@ -692,7 +693,19 @@ impl Runner<'_> {
                 time,
                 volumes,
             } => {
-                let files = self.tree(&operand(tree)?)?;
+                let files = match placements {
+                    Some(placements) => placements
+                        .iter()
+                        .map(|p| {
+                            Ok(TreeFile {
+                                path: operand(&p.dos_name)?,
+                                bytes: self.file(&operand(&p.from)?)?,
+                                time: p.time.as_ref().map(|t| t.value),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                    None => self.tree(&operand(tree)?)?,
+                };
                 let format = operand(format)?;
                 let profile = self
                     .provider
@@ -1593,8 +1606,13 @@ fn kept(recipe: &Recipe, plan: &Plan, built: &Built) -> Vec<Kept> {
                     members = true;
                     archive.as_ref()
                 }
-                Op::Fat { tree, .. } => {
+                Op::Fat {
+                    tree, placements, ..
+                } => {
                     through = "kept as files";
+                    for from in placements.iter().flatten().filter_map(|p| p.from.as_ref()) {
+                        self.trace(&from.value, through, members, out, depth + 1);
+                    }
                     tree.as_ref()
                 }
                 Op::Text { text } => {

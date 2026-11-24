@@ -66,11 +66,11 @@ jobs:
       - name: Prepare the schema release asset
         run: |
           mkdir -p dist
-          cp backlog/docs/design/recipe-schema-1.0.json dist/
+          cp backlog/docs/design/recipe-schema-1.{0,1}.json dist/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-recipe-schema
-          path: dist/recipe-schema-1.0.json
+          path: dist/recipe-schema-1.*.json
           if-no-files-found: error
 
   build:
@@ -290,7 +290,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum -- *.tar.gz recipe-schema-1.0.json > SHA256SUMS
+          sha256sum -- *.tar.gz recipe-schema-1.*.json > SHA256SUMS
           cat SHA256SUMS
 
       # --clobber lets a manual run replace the assets of an earlier one.
@@ -299,7 +299,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$TAG" dist/*.tar.gz dist/recipe-schema-1.0.json dist/SHA256SUMS \
+          gh release upload "$TAG" dist/*.tar.gz dist/recipe-schema-1.*.json dist/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --clobber
 
       # Appended once: a manual run finds the marker and leaves the notes alone.
@@ -329,7 +329,7 @@ jobs:
 
           Both Linux archives require glibc 2.35 or newer.
 
-          `recipe-schema-1.0.json` is the recipe format 1.0 editor schema.
+          `recipe-schema-1.0.json` and `recipe-schema-1.1.json` are the versioned recipe editor schemas.
 
           Each archive holds `unemu` (the desktop app and command line), `LICENSE`,
           `README.md`, `THIRD-PARTY-LICENSES.md` and the notices it quotes. Check a download against `SHA256SUMS`:

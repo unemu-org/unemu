@@ -9,10 +9,10 @@ use crate::model::{Op, Recipe};
 use image_store::compat::{lookup, AppVersion, Requirement, Row};
 
 pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 6);
-pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
+pub const NEWEST_ROW: AppVersion = NEXT_RELEASE;
 
 /// Recipe versions, the value of the top-level `recipe` key.
-pub const VERSIONS: &[Row] = &[("1.0", AppVersion::new(0, 0, 3))];
+pub const VERSIONS: &[Row] = &[("1.0", AppVersion::new(0, 0, 3)), ("1.1", NEXT_RELEASE)];
 
 /// Step kinds, by verb.
 pub const STEPS: &[Row] = &[
@@ -112,8 +112,10 @@ mod tests {
     /// has a row; a row never names a release above this build's level.
     #[test]
     fn every_recipe_version_and_step_kind_has_a_row() {
-        assert!(lookup(&[VERSIONS], crate::spec::VERSION).is_some());
-        assert_eq!(VERSIONS.len(), 1, "one row per version the parser takes");
+        for version in crate::spec::VERSIONS {
+            assert!(lookup(&[VERSIONS], version).is_some());
+        }
+        assert_eq!(VERSIONS.len(), crate::spec::VERSIONS.len());
         for verb in crate::spec::VERBS {
             assert!(lookup(&[STEPS], verb).is_some(), "{verb}");
         }
@@ -126,9 +128,9 @@ mod tests {
                 .max(),
             Some(NEWEST_ROW)
         );
-        assert!(NEXT_RELEASE > NEWEST_ROW);
+        assert!(NEXT_RELEASE >= NEWEST_ROW);
         for (_, release) in VERSIONS.iter().chain(STEPS) {
-            assert!(*release <= image_store::compat::EXTRACTION_BASELINE);
+            assert!(*release <= NEXT_RELEASE);
         }
     }
 

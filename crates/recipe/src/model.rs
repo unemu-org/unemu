@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The typed model of recipe version 1.0 (recipes §6): a Mediafile or a
+//! The typed model of recipe versions 1.0 and 1.1 (recipes §6): a Mediafile or a
 //! Firmwarefile, and the work file of recipes §6.16.
 //!
 //! Every value keeps where it was written ([`At`]), so a later check reports
@@ -234,6 +234,14 @@ pub struct Step {
     pub op: Op,
 }
 
+/// A direct file input stored unchanged in the FAT root directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub from: Option<At<String>>,
+    pub dos_name: Option<At<String>>,
+    pub time: Option<At<LocalTime>>,
+}
+
 /// What a step does.
 // A recipe has at most 64 steps; boxing the largest verb would buy nothing.
 #[allow(clippy::large_enum_variant)]
@@ -245,9 +253,10 @@ pub enum Op {
         members: Vec<Member>,
         complete: bool,
     },
-    /// A FAT volume, or `volumes` of them, from a tree.
+    /// A FAT volume, or `volumes` of them, from a tree or file placements.
     Fat {
         tree: Option<At<String>>,
+        placements: Option<Vec<Placement>>,
         format: Option<At<String>>,
         label: Option<At<String>>,
         serial: Option<At<i64>>,

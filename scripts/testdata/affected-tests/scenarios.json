@@ -1,5 +1,10 @@
 [
   {
+    "name": "the recipe 1.1 schema selects its drift test",
+    "changed": ["backlog/docs/design/recipe-schema-1.1.json"],
+    "expect": {"mode": "crates", "seeds": ["cli-pc"], "tier": "fast"}
+  },
+  {
     "name": "the front-end detector runs only its own scan",
     "changed": ["crates/image-store/tests/platform_ids.rs"],
     "expect": {"scan_tests": []}

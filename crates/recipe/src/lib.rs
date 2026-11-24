@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn the_frozen_version_is_accepted_and_experimental_or_future_versions_are_refused() {
-        for (version, accepted) in [("1.0", true), ("0.1", false), ("1.1", false)] {
+        for (version, accepted) in [("1.0", true), ("1.1", true), ("0.1", false), ("1.2", false)] {
             let text =
                 format!("recipe = {version:?}\n[work]\nid = \"test\"\n[title]\ntitle = \"Test\"\n");
             let report = check_text("test.work.toml", &text, Providers(&[]));
@@ -869,7 +869,7 @@ mod tests {
                 let expected = if version == "0.1" {
                     "recipe \"0.1\" is the experimental format; this unemu reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with unemu recipe check before pinning"
                 } else {
-                    "\"1.1\" is not one of 1.0"
+                    "\"1.2\" is not one of 1.0, 1.1"
                 };
                 assert_eq!(finding.message, expected);
             }

@@ -162,7 +162,8 @@ pub struct MemberPlan {
 pub struct StepPlan {
     pub id: String,
     pub verb: &'static str,
-    pub operand: String,
+    pub operand: Option<String>,
+    pub placements: Option<Vec<crate::model::Placement>>,
     pub status: Status,
     /// What the step does when it runs, beyond its verb.
     pub detail: Option<String>,
@@ -478,7 +479,14 @@ impl<'r, 's> Planner<'r, 's> {
         }
         let operand = match self.steps.get(name).map(|info| info.op) {
             Some(Op::Unpack { archive, .. }) => archive.as_ref(),
-            Some(Op::Fat { tree, .. }) => tree.as_ref(),
+            Some(Op::Fat {
+                tree, placements, ..
+            }) => {
+                for from in placements.iter().flatten().filter_map(|p| p.from.as_ref()) {
+                    self.reach(&from.value, into, depth + 1);
+                }
+                tree.as_ref()
+            }
             Some(Op::Text { text }) => text.as_ref(),
             _ => None,
         };
@@ -529,7 +537,19 @@ impl<'r, 's> Planner<'r, 's> {
                 }
                 archive.filter(|_| open)
             }
-            Op::Fat { tree, .. } => tree.as_ref().map(|t| t.value.clone()),
+            Op::Fat {
+                tree, placements, ..
+            } => {
+                let references: Vec<String> = placements
+                    .iter()
+                    .flatten()
+                    .filter_map(|p| p.from.as_ref().map(|r| r.value.clone()))
+                    .collect();
+                for from in references {
+                    needs.extend(self.needs(&from, steps, depth + 1));
+                }
+                tree.as_ref().map(|t| t.value.clone())
+            }
             Op::Text { text } => text.as_ref().map(|t| t.value.clone()),
             Op::Unknown { .. } => None,
         };
@@ -772,10 +792,20 @@ fn plan_with(
             Op::Text { text } => ("text", text),
             Op::Unknown { .. } => continue,
         };
-        let operand = operand
-            .as_ref()
-            .map(|o| o.value.clone())
-            .unwrap_or_default();
+        let placements = match &step.op {
+            Op::Fat { placements, .. } => placements.clone(),
+            _ => None,
+        };
+        let operand = if placements.is_some() {
+            None
+        } else {
+            Some(
+                operand
+                    .as_ref()
+                    .map(|o| o.value.clone())
+                    .unwrap_or_default(),
+            )
+        };
         let mut detail = None;
         let status = if !reached.contains(&id) {
             Status::NotNeeded(if spared.contains(&id) {
@@ -809,7 +839,8 @@ fn plan_with(
             } else {
                 if verb == "unpack" && open < used.len() {
                     detail = Some(format!(
-                        "opens {operand} for {open} of {} members",
+                        "opens {} for {open} of {} members",
+                        operand.as_deref().unwrap_or_default(),
                         used.len()
                     ));
                 }
@@ -824,6 +855,7 @@ fn plan_with(
             id,
             verb,
             operand,
+            placements,
             status,
             detail,
         });
@@ -1108,7 +1140,7 @@ impl Plan {
                 "  {}: {} {}: {}",
                 step.id,
                 step.verb,
-                step.operand,
+                step.operand.as_deref().unwrap_or("file placements"),
                 status(&step.status, "runs", "blocked")
             ));
             if let Some(detail) = &step.detail {
@@ -1208,7 +1240,7 @@ impl Plan {
             }).collect::<Vec<_>>(),
             "steps": self.steps.iter().map(|s| {
                 let (status, reason, missing) = status_json(&s.status, "runs", "blocked");
-                json!({
+                let mut row = json!({
                     "id": s.id,
                     "verb": s.verb,
                     "operand": s.operand,
@@ -1216,7 +1248,18 @@ impl Plan {
                     "reason": reason,
                     "missing": missing,
                     "detail": s.detail,
-                })
+                });
+                if let Some(placements) = &s.placements {
+                    row["placements"] = json!(placements.iter().map(|p| json!({
+                        "from": p.from.as_ref().map(|v| &v.value),
+                        "dos_name": p.dos_name.as_ref().map(|v| &v.value),
+                        "time": p.time.as_ref().map(|t| {
+                            let t = t.value;
+                            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute, t.second)
+                        }),
+                    })).collect::<Vec<_>>());
+                }
+                row
             }).collect::<Vec<_>>(),
             "outputs": self.outputs.iter().map(|o| {
                 let (status, _, missing) = status_json(&o.status, "ready", "blocked");
@@ -1767,5 +1810,25 @@ mod tests {
             text.contains("  game (GAME): found 3 of 3 files, read from 2 places (library "),
             "{text}"
         );
+    }
+    #[test]
+    fn frozen_plan_json_is_byte_identical() {
+        let (recipe, _, _) = unpacking();
+        let plan = plan(
+            &recipe,
+            "existing.media.toml",
+            None,
+            Sources {
+                store: None,
+                downloads: None,
+                libraries: &mut [],
+            },
+        );
+        let actual = plan.render_json();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/plan-1.0.json");
+        if std::env::var_os("UNEMU_WRITE_PLAN_GOLDEN").is_some() {
+            fs::write(&path, &actual).unwrap();
+        }
+        assert_eq!(fs::read_to_string(path).unwrap(), actual);
     }
 }

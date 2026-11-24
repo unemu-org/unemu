@@ -104,7 +104,9 @@ def data_rules: [
    crates: ["cli-pc", "pc-image"],
    why: "recipes the recipe checks and the user-file volume tests read"},
   {prefix: "backlog/docs/design/recipe-schema-1.0.json", goldens: false,
-   crates: ["pc-image"], why: "the recipe schema a test compares with the generated one"}
+   crates: ["pc-image"], why: "the recipe schema a test compares with the generated one"},
+  {prefix: "backlog/docs/design/recipe-schema-1.1.json", goldens: false,
+   crates: ["cli-pc"], why: "the recipe 1.1 schema its drift test reads"}
 ];
 # Tests that read the sources on their own side of the extraction boundary.
 def scan_tests: [

@@ -2022,7 +2022,9 @@ until user documentation is written after the front-end split and takes them ove
 
 - An input is always its SHA-256 and exact size; names and indexes are hints.
 - `recipe = "1.0"` selects the TOML 1.0 subset, schema and exact step bytes.
-  This release refuses experimental `0.1` and unknown versions. Future
+  This release also accepts `recipe = "1.1"` for direct file-input FAT
+  placements ([recipes §6.17](design/recipes.md#617-version-11-direct-file-input-fat-placements));
+  1.0 stays unchanged. It refuses experimental `0.1` and unknown versions. Future
   releases read every version from 1.0 through their own; an existing
   version never gains a key or changes interpretation.
 - A new minor adds keys, steps, formats or corrected step bytes. The old
@@ -2056,6 +2058,10 @@ the frozen 1.0 schema with `UNEMUPC_WRITE_RECIPE_SCHEMA=1 cargo test -p pc-image
 workflow attaches that same file as a checksummed release asset. A JSON
 Schema cannot replace `recipe check` for TOML syntax, references, licences,
 content hashes or provider size rules.
+The separate [recipe-schema-1.1.json](design/recipe-schema-1.1.json) is
+regenerated with `UNEMUPC_WRITE_RECIPE_SCHEMA=1 cargo test -p cli-pc
+--test recipe_build placements_schema_one_one_matches_the_generated_file`.
+Both schemas are distributed with checksums; the 1.0 schema is unchanged.
 
 ## Recipe conformance
 
