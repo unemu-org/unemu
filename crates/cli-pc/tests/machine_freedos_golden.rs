@@ -20,7 +20,7 @@ use pc_harness::test_support::fat12;
 use pc_harness::test_support::fixtures;
 
 // Moving the core pin requires checking the recorded golden again.
-const CORE_REV: &str = "32245872aaee397a379921f4ed1873bc556b8e32";
+const CORE_REV: &str = "779a9ecdc5dafe004165e325b8a6379f70ea5593";
 
 #[path = "../../pc-image/tests/support/core_pin.rs"]
 mod core_pin;
