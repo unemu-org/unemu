@@ -54,7 +54,10 @@ fn diag_at_reports_the_running_machine_then_the_run_goes_on() {
         // After ten instructions the guest has programmed the 8259 but not
         // yet masked IRQ1.
         "pic      master irr 00 isr 00 imr 00 base 08",
-        "trail    f800:0010\n",
+        // The core serves the PIC ports while the CPU runs, so a write to
+        // them is not a trail boundary: the one sample is where the run
+        // stopped for the report.
+        "trail    f800:0012\n",
     ] {
         assert!(errors.contains(line), "{line:?} missing from\n{errors}");
     }

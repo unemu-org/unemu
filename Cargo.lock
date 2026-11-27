@@ -263,7 +263,7 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 [[package]]
 name = "assembly"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "audio",
  "bus",
@@ -456,7 +456,7 @@ dependencies = [
 [[package]]
 name = "audio"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -550,7 +550,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bus"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -675,7 +675,7 @@ dependencies = [
 [[package]]
 name = "chipset"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "device",
  "devices",
@@ -890,7 +890,7 @@ dependencies = [
 [[package]]
 name = "cpu"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "thiserror 1.0.69",
  "x86jit-core",
@@ -951,7 +951,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 [[package]]
 name = "device"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "thiserror 1.0.69",
 ]
@@ -959,7 +959,7 @@ dependencies = [
 [[package]]
 name = "devices"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -1856,7 +1856,7 @@ dependencies = [
 [[package]]
 name = "journal"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "sha2",
  "thiserror 1.0.69",
@@ -1866,7 +1866,7 @@ dependencies = [
 [[package]]
 name = "journal-files"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "journal",
  "libc",
@@ -2016,7 +2016,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 [[package]]
 name = "machine"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "bus",
  "cpu",
@@ -2027,7 +2027,7 @@ dependencies = [
 [[package]]
 name = "machine-file"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "assembly",
  "cpu",
@@ -2705,7 +2705,7 @@ dependencies = [
 [[package]]
 name = "pc-config"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "assembly",
  "serde",
@@ -2718,7 +2718,7 @@ dependencies = [
 [[package]]
 name = "pc-harness"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "anyhow",
  "assembly",
@@ -3948,7 +3948,7 @@ dependencies = [
 [[package]]
 name = "unemu-pc-core"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "assembly",
  "audio",
@@ -3974,7 +3974,7 @@ dependencies = [
 [[package]]
 name = "unemupc"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "anyhow",
  "assembly",
@@ -4123,7 +4123,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "video"
 version = "0.0.5"
-source = "git+https://github.com/unemu-org/unemupc?rev=779a9ecdc5dafe004165e325b8a6379f70ea5593#779a9ecdc5dafe004165e325b8a6379f70ea5593"
+source = "git+https://github.com/unemu-org/unemupc?rev=523783886ea12337a37a763c413756fb2bd27439#523783886ea12337a37a763c413756fb2bd27439"
 dependencies = [
  "device",
 ]
@@ -4866,7 +4866,7 @@ source = "git+https://github.com/unemu-org/unemunes?rev=dbdfbc6fab42ff4cc20961b7
 [[package]]
 name = "x86jit-core"
 version = "0.3.0"
-source = "git+https://github.com/unemu-org/x86jit?rev=4bf91c8df4830c7194d02d61ffe1d745442ba74a#4bf91c8df4830c7194d02d61ffe1d745442ba74a"
+source = "git+https://github.com/unemu-org/x86jit?rev=241c4cba3b3f6828139551314b37cd510889b2b1#241c4cba3b3f6828139551314b37cd510889b2b1"
 dependencies = [
  "iced-x86",
 ]
