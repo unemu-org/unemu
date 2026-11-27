@@ -1579,7 +1579,9 @@ pub fn verify(
             }
             Err(e) => errors.push(format!("the locked set config: {e}")),
         },
-        Kind::Machine => errors.push("machine recipes are not built yet".into()),
+        Kind::Machine => {
+            errors.push("machine locks are verified against the composed manifest".into())
+        }
         Kind::Firmware => match firmware::Config::decode(&locked.config) {
             Ok(config) => {
                 if config.roms.len() != built.roms.len() {

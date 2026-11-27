@@ -19,19 +19,21 @@
 //! **Conformance** ([`conformance`], `unemu recipe conformance`): every
 //! pinned recipe of the files and folders named is built into a scratch
 //! store from the libraries given, and the digest it publishes is compared
-//! with its `digest`. A build of the program conforms when every pinned
-//! recipe it can find the inputs of builds its digest; this is how a
-//! release proves it still builds what earlier releases pinned (recipes §9),
-//! and how a repository of recipes checks a release against its own
-//! library.
+//! with its `digest`. A machine recipe is composed after the package
+//! recipes named with it, whose builds hold the packages its uses pin. A
+//! build of the program conforms when every pinned recipe it can find the
+//! inputs of builds its digest; this is how a release proves it still
+//! builds what earlier releases pinned (recipes §9), and how a repository
+//! of recipes checks a release against its own library.
 
 use crate::build::{build_path, Outcome, Report, Request};
 use crate::library::Library;
-use crate::model::Document;
+use crate::model::{Document, Kind};
 use crate::Providers;
 use image_store::Store;
 use std::io;
 use std::path::{Path, PathBuf};
+use unemu_core_api::Core;
 
 /// What [`pin_path`] gives.
 #[derive(Debug)]
@@ -195,37 +197,45 @@ pub struct Conformance {
 /// Build every pinned recipe among the files and folders named into
 /// `scratch`, a store of its own, from `libraries` only (no download, no
 /// other store), and compare each digest with its pin. Work files are
-/// skipped; drafts are listed and not built.
+/// skipped; drafts are listed and not built. A machine recipe is composed
+/// with the core `core_for` names for its platform; the packages its uses
+/// pin are found in `scratch` only, where the package recipes named with
+/// it were built first. The results keep the order of the files.
 pub fn conformance(
     paths: &[PathBuf],
     providers: Providers<'_>,
+    core_for: &dyn Fn(&str) -> Option<&'static dyn Core>,
     scratch: &Store,
     libraries: &mut [Library],
 ) -> io::Result<Vec<Conformance>> {
-    let mut out = Vec::new();
+    let mut out: Vec<Option<Conformance>> = Vec::new();
+    let mut packages = Vec::new();
+    let mut machines = Vec::new();
     for file in crate::files(paths)? {
         let name = file.display().to_string();
-        let digest = match crate::document(&file)? {
+        let result = match crate::document(&file)? {
             Some(Document::Work(_)) => continue,
             Some(Document::Recipe(recipe)) => match recipe.identity.digest {
-                Some(digest) => digest.value,
-                None => {
-                    out.push(Conformance {
-                        file: name,
-                        result: Conformed::Draft,
-                    });
+                Some(digest) => {
+                    // A use names a package by its manifest digest only, so
+                    // a machine is built after every package of the run.
+                    let queue = if recipe.kind == Kind::Machine {
+                        &mut machines
+                    } else {
+                        &mut packages
+                    };
+                    queue.push((out.len(), file, digest.value));
+                    out.push(None);
                     continue;
                 }
+                None => Conformed::Draft,
             },
-            None => {
-                out.push(Conformance {
-                    file: name,
-                    result: Conformed::Failed("it does not read as a recipe".into()),
-                });
-                continue;
-            }
+            None => Conformed::Failed("it does not read as a recipe".into()),
         };
-        let outcome = build_path(
+        out.push(Some(Conformance { file: name, result }));
+    }
+    for (index, file, digest) in packages.into_iter().chain(machines) {
+        let outcome = crate::template::build_path(
             Request {
                 path: &file,
                 providers,
@@ -239,6 +249,8 @@ pub fn conformance(
                 // bytes, so nothing is found instead of made.
                 find_outputs: false,
             },
+            core_for,
+            None,
             &mut |_| {},
         )?;
         let result = match outcome {
@@ -265,9 +277,12 @@ pub fn conformance(
             Outcome::NotRecipe => continue,
             Outcome::Failed { error, .. } => Conformed::Failed(error),
         };
-        out.push(Conformance { file: name, result });
+        out[index] = Some(Conformance {
+            file: file.display().to_string(),
+            result,
+        });
     }
-    Ok(out)
+    Ok(out.into_iter().flatten().collect())
 }
 
 /// The text `unemu recipe conformance` prints: a line per recipe, then a

@@ -1130,7 +1130,7 @@ fn machine_config_cannot_name_a_declared_step() {
 }
 
 #[test]
-fn machine_publisher_refuses_an_unimplemented_template() {
+fn machine_publisher_refuses_a_staged_template() {
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("machine-publisher-store");
     let store = image_store::Store::open(root).unwrap();
     let staged = recipe::build::Staged {
@@ -1148,7 +1148,10 @@ fn machine_publisher_refuses_an_unimplemented_template() {
     let error =
         recipe::build::Publisher::publish(&pc_image::recipe_build::PcPublisher, &store, &staged)
             .unwrap_err();
-    assert_eq!(error, "machine recipes are not built yet");
+    assert_eq!(
+        error,
+        "machine recipes are published from their composed manifest, not staged"
+    );
 }
 
 fn named_recipe(kind: &str, name: &str, version: &str) -> String {

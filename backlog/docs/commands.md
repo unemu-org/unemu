@@ -2152,7 +2152,13 @@ of made: conformance proves that the steps still make the pinned bytes. A
 pinned recipe whose lock is lost is built as `recipe build` builds it
 (Pinning recipes): it conforms when this build makes the pinned digest,
 and is `not built: …` with the lost-lock message, both digests in it,
-otherwise.
+otherwise. A machine recipe is composed with its platform's core after
+every package recipe of the run: its uses pin packages by manifest digest,
+and conformance looks for them in its scratch store only, so the firmware
+and media recipes it uses are named with it, in any order. A use none of
+them builds is a missing input (`not built: missing N of M inputs`); a
+composed manifest its lock disagrees with differs, as a package whose
+payloads disagree with its lock does.
 
 ```sh
 # this repository: the shipped template recipes and the pinned Ken's Labyrinth recipe
@@ -2185,6 +2191,9 @@ drafts: a failed pinned build or a run with no pinned recipe still exits 1.
 The test `the_pinned_corpus_builds_the_digests_it_pins` (`pc-image`,
 `recipe_lock`) runs the same harness on the corpus's six pinned open recipes,
 the three FreeDOS 1.4 floppy sets and the three open firmware packages.
+The `machine_conformance` tests (`pc-image` and `cli-pc`) run it on the
+open-at 1.3.0 recipe `image template config` emits, pinned, with its three
+firmware recipes.
 
 The required release gate is `bash scripts/ci-gate.sh recipe-conformance`.
 It runs the six pinned shipped recipes and the pinned

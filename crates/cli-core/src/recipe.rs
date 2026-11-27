@@ -457,9 +457,11 @@ pub fn execute(
         RecipeCommand::Pin(options) => {
             build_command(&options, true, providers, host, platforms, cores, io)
         }
-        RecipeCommand::Conformance(options) => conformance(&options, false, providers, host, io),
+        RecipeCommand::Conformance(options) => {
+            conformance(&options, false, providers, host, cores, io)
+        }
         RecipeCommand::ConformanceAllowDrafts(options) => {
-            conformance(&options, true, providers, host, io)
+            conformance(&options, true, providers, host, cores, io)
         }
         RecipeCommand::Scaffold(paths) => scaffold(&paths, io),
         RecipeCommand::Inputs(options) => inputs(&options, providers, io),
@@ -1230,13 +1232,14 @@ fn build_with_cores(
 }
 
 /// Build every pinned recipe named into a scratch store under the store's
-/// cache, from the libraries only, compare the digests, and remove the
-/// scratch store.
+/// cache, from the libraries only, machine recipes with the platform's core,
+/// compare the digests, and remove the scratch store.
 fn conformance(
     options: &ConformanceOptions,
     allow_drafts: bool,
     providers: recipe::Providers<'_>,
     host: &HostSources,
+    cores: &core_launch::Cores,
     io: &mut Io<'_>,
 ) -> u8 {
     let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
@@ -1269,7 +1272,13 @@ fn conformance(
         .map(|scratch| scratch.with_compatibility(host.compatibility.clone()))
         .map_err(|e| std::io::Error::other(format!("{}: {e}", scratch_root.display())))
         .and_then(|scratch| {
-            recipe::pin::conformance(&options.paths, providers, &scratch, &mut libraries)
+            recipe::pin::conformance(
+                &options.paths,
+                providers,
+                &|platform| cores.for_platform(platform),
+                &scratch,
+                &mut libraries,
+            )
         });
     let _ = std::fs::remove_dir_all(&scratch_root);
     save_libraries(&libraries, &caches, "conformance", io);

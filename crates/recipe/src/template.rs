@@ -534,6 +534,9 @@ fn build_path_with(
             facts,
             config,
         } => {
+            // A composed manifest the lock disagrees with is a mismatch, as
+            // a package's payloads that disagree with its lock are.
+            let mut differs = false;
             let result = (|| {
                 let core = core_for(family).ok_or("no template core")?;
                 let document = ConfigDocument::new(provider.template_config_type()?, &config);
@@ -548,7 +551,8 @@ fn build_path_with(
                 )?;
                 let descriptor = match &locked {
                     Some(locked) => {
-                        crate::lock::verify_machine(locked, &current)?;
+                        crate::lock::verify_machine(locked, &current)
+                            .inspect_err(|_| differs = true)?;
                         crate::lock::store(store, locked, &[])?
                     }
                     None => {
@@ -580,6 +584,11 @@ fn build_path_with(
                 }
             })();
             match result {
+                Err(error) if differs => Ok(build::Outcome::Mismatch {
+                    plan,
+                    mismatches: vec![error],
+                    kept: None,
+                }),
                 Err(error) => Ok(build::Outcome::Failed { plan, error }),
                 Ok(published) => {
                     build::record(store, &reference, &published, &recipe_digest, log);

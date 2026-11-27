@@ -691,6 +691,7 @@ fn the_pinned_corpus_builds_the_digests_it_pins() {
             template_recipe("xtide-universal-bios"),
         ],
         recipe::Providers(&THIS),
+        &|_| None,
         &scratch,
         &mut libraries,
     )
@@ -1330,6 +1331,7 @@ fn a_pinned_recipe_finds_its_locked_outputs_in_the_store_instead_of_making_them(
     let results = recipe::pin::conformance(
         std::slice::from_ref(&recipe),
         recipe::Providers(&THIS),
+        &|_| None,
         &store,
         &mut libraries,
     )
@@ -1598,6 +1600,7 @@ fn conformance_rebuilds_a_lost_lock() {
         recipe::pin::conformance(
             std::slice::from_ref(&recipe),
             recipe::Providers(providers),
+            &|_| None,
             &Store::open(t.path(scratch)).unwrap(),
             &mut libraries,
         )

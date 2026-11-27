@@ -1316,7 +1316,7 @@ the set of commands is the proposal.
 | `unemu recipe plan FILE\|REF [--json]` | Resolves every input and prints the report of §3.5. Writes nothing. |
 | `unemu recipe build FILE\|REF [--fetch] [--library DIR]…` | Builds and tags the artifact and every attachment whose inputs are found. `--fetch` is the consent of R15. |
 | `unemu recipe pin FILE` | The author's build: writes `digest` into the file and the lock beside it. |
-| `unemu recipe conformance FILE\|FOLDER…` | Builds every pinned recipe named into a scratch store from the libraries and compares the digests (B8). |
+| `unemu recipe conformance FILE\|FOLDER…` | Builds every pinned recipe named into a scratch store from the libraries and compares the digests (B8); a machine recipe after the package recipes named with it, which make its uses. |
 | `unemu recipe scaffold FILE\|DIR…` | Writes the `[input]` tables, member lists and file sets for files the author has, with sizes, hashes and an archive's times. The author adds the description. |
 | `unemu recipe inputs FILE --format dat\|csv\|sha256sums` | The inputs as a Logiqx DAT, a CSV or a checksum file, for a ROM manager or `sha256sum -c`. |
 | `unemu recipe push FILE REF`, `recipe pull REF` | The recipe artifact (§7). |

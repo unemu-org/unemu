@@ -1078,10 +1078,11 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         crate::Opened::Work => return Ok(Outcome::NotRecipe),
         crate::Opened::Recipe(recipe, work, bytes) => (*recipe, work, bytes),
     };
+    // Composing a machine needs a core, which only the template build has.
     if recipe.kind == Kind::Machine {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "machine recipes are not built yet",
+            "machine recipes are built by the template build, which composes them with a core",
         ));
     }
     let file = request.path.display().to_string();
